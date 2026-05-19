@@ -1,0 +1,58 @@
+[
+  {
+    "id": "001",
+    "description": "Implement factorial(n) in solution.py. Return n! for n >= 0. For n=0 return 1.",
+    "entry_point": "factorial",
+    "solution_stub": "def factorial(n: int) -> int:\n    pass\n",
+    "test_content": "from solution import factorial\n\ndef test_factorial_zero():\n    assert factorial(0) == 1\n\ndef test_factorial_five():\n    assert factorial(5) == 120\n\ndef test_factorial_one():\n    assert factorial(1) == 1\n"
+  },
+  {
+    "id": "002",
+    "description": "Implement is_palindrome(s) in solution.py. Return True if string s reads the same forwards and backwards (ignore case).",
+    "entry_point": "is_palindrome",
+    "solution_stub": "def is_palindrome(s: str) -> bool:\n    pass\n",
+    "test_content": "from solution import is_palindrome\n\ndef test_palindrome_simple():\n    assert is_palindrome('racecar') is True\n\ndef test_not_palindrome():\n    assert is_palindrome('hello') is False\n\ndef test_palindrome_case_insensitive():\n    assert is_palindrome('Racecar') is True\n"
+  },
+  {
+    "id": "003",
+    "description": "Implement sum_list(nums) in solution.py. Return the sum of all numbers in the list.",
+    "entry_point": "sum_list",
+    "solution_stub": "def sum_list(nums: list) -> int:\n    pass\n",
+    "test_content": "from solution import sum_list\n\ndef test_sum_empty():\n    assert sum_list([]) == 0\n\ndef test_sum_positive():\n    assert sum_list([1, 2, 3, 4]) == 10\n\ndef test_sum_negative():\n    assert sum_list([-1, 1, 5]) == 5\n"
+  },
+  {
+    "id": "004",
+    "description": "Implement reverse_string(s) in solution.py. Return the reversed string.",
+    "entry_point": "reverse_string",
+    "solution_stub": "def reverse_string(s: str) -> str:\n    pass\n",
+    "test_content": "from solution import reverse_string\n\ndef test_reverse_hello():\n    assert reverse_string('hello') == 'olleh'\n\ndef test_reverse_empty():\n    assert reverse_string('') == ''\n\ndef test_reverse_single():\n    assert reverse_string('a') == 'a'\n"
+  },
+  {
+    "id": "005",
+    "description": "Implement fibonacci(n) in solution.py. Return the n-th Fibonacci number (0-indexed: fib(0)=0, fib(1)=1).",
+    "entry_point": "fibonacci",
+    "solution_stub": "def fibonacci(n: int) -> int:\n    pass\n",
+    "test_content": "from solution import fibonacci\n\ndef test_fib_zero():\n    assert fibonacci(0) == 0\n\ndef test_fib_one():\n    assert fibonacci(1) == 1\n\ndef test_fib_ten():\n    assert fibonacci(10) == 55\n"
+  },
+  {
+    "id": "006",
+    "description": "Implement max_in_list(nums) in solution.py. Return the maximum value in the list. Raise ValueError on empty list.",
+    "entry_point": "max_in_list",
+    "solution_stub": "def max_in_list(nums: list) -> int:\n    pass\n",
+    "test_content": "import pytest\nfrom solution import max_in_list\n\ndef test_max_positive():\n    assert max_in_list([3, 1, 4, 1, 5]) == 5\n\ndef test_max_negative():\n    assert max_in_list([-3, -1, -4]) == -1\n\ndef test_max_empty_raises():\n    with pytest.raises(ValueError):\n        max_in_list([])\n"
+  },
+  {
+    "id": "007",
+    "description": "Implement count_vowels(s) in solution.py. Return the count of vowels (a,e,i,o,u) in s, case-insensitive.",
+    "entry_point": "count_vowels",
+    "solution_stub": "def count_vowels(s: str) -> int:\n    pass\n",
+    "test_content": "from solution import count_vowels\n\ndef test_count_vowels_basic():\n    assert count_vowels('hello') == 2\n\ndef test_count_vowels_none():\n    assert count_vowels('xyz') == 0\n\ndef test_count_vowels_mixed_case():\n    assert count_vowels('AEiou') == 5\n"
+  },
+  {
+    "id": "008",
+    "description": "Implement is_prime(n) in solution.py. Return True if n is prime, False otherwise. n >= 2 for primes; 0 and 1 are not prime.",
+    "entry_point": "is_prime",
+    "solution_stub": "def is_prime(n: int) -> bool:\n    pass\n",
+    "test_content": "from solution import is_prime\n\ndef test_prime_two():\n    assert is_prime(2) is True\n\ndef test_not_prime_four():\n    assert is_prime(4) is False\n\ndef test_prime_seventeen():\n    assert is_prime(17) is True\n\ndef test_not_prime_one():\n    assert is_prime(1) is False\n"
+  }
+]
