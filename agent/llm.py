@@ -37,6 +37,33 @@ def smoke_test() -> str:
     )
     return message.content or ""
 
+def count_tokens(messages: list[dict]) -> int:
+    """Rough token estimate: 1 token ≈ 4 characters."""
+    total = sum(len(str(m.get("content", ""))) for m in messages)
+    return total // 4
+
+
+def trim_context(messages: list[dict], max_tokens: int = 50000) -> list[dict]:
+    """
+    Trim conversation history when token budget is exceeded.
+
+    Always keeps:
+    - messages[0] — system prompt
+    - messages[1] — original task
+    - messages[-1] — most recent message
+
+    Drops oldest middle messages until under budget.
+    """
+    if count_tokens(messages) <= max_tokens:
+        return messages
+
+    # Need at least 3 messages to trim (system, task, latest)
+    while count_tokens(messages) > max_tokens and len(messages) > 3:
+        # Keep [0] system, [1] task, drop [2] (oldest middle), keep [-1] latest
+        messages = [messages[0], messages[1]] + messages[3:]
+
+    return messages
+
 
 if __name__ == "__main__":
     print(smoke_test())

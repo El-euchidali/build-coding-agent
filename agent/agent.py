@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.llm import chat
+from agent.llm import chat , trim_context
 from agent.prompts import SYSTEM_PROMPT
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 
@@ -75,6 +75,7 @@ def run_task(
 
     last_output = ""
     for iteration in range(1, max_iterations + 1):
+        messages = trim_context(messages)  # keep context under token limit
         message = chat(messages, tools=TOOL_SCHEMAS)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
