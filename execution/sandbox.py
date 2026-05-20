@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from execution.output_format import format_pytest_output, truncate_lines
+
 
 def run_python_file(
     workspace: Path, filepath: str, timeout: int = 30
@@ -25,11 +27,11 @@ def run_python_file(
     output = result.stdout + result.stderr
     if result.returncode != 0:
         output += f"\n* EXIT CODE: {result.returncode}"
-    return output or "(no output)"
+    return truncate_lines(output or "(no output)", max_lines=30)
 
 
 def run_pytest(workspace: Path, test_path: str = ".", timeout: int = 60) -> str:
-    """Run pytest in the workspace and return output with pass/fail summary."""
+    """Run pytest in the workspace and return formatted output with pass/fail summary."""
     args = [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"]
     try:
         result = subprocess.run(
@@ -42,10 +44,10 @@ def run_pytest(workspace: Path, test_path: str = ".", timeout: int = 60) -> str:
     except subprocess.TimeoutExpired:
         return f"Error: pytest timed out after {timeout}s"
 
-    output = result.stdout + result.stderr
-    lower = output.lower()
+    raw = result.stdout + result.stderr
+    output = format_pytest_output(raw)
     if result.returncode == 0:
         output += "\n* ALL TESTS PASSED"
-    elif "failed" in lower or result.returncode != 0:
+    else:
         output += "\n* SOME TESTS FAILED"
     return output

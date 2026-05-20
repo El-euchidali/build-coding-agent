@@ -2,9 +2,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.llm import chat , trim_context , reset_token_counter, get_token_usage
-from agent.prompts import SYSTEM_PROMPT
+from agent.llm import chat, get_token_usage, reset_token_counter, trim_context
+from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
+from agent.failure import classify_failure, tests_passed_in_history
+
+MAX_NUDGES_WITHOUT_TESTS = 3
 
 
 @dataclass
@@ -14,6 +17,7 @@ class TaskResult:
     iterations: int
     error: str | None = None
     tokens: dict | None = None
+    failure_category: str | None = None
 
 
 def _assistant_message_dict(message) -> dict:
@@ -59,12 +63,30 @@ def _get_tool_calls(message) -> list[dict]:
     return []
 
 
+def _finalize_result(
+    success: bool,
+    output: str,
+    iterations: int,
+    messages: list[dict],
+    error: str | None = None,
+) -> TaskResult:
+    result = TaskResult(
+        success=success,
+        output=output,
+        iterations=iterations,
+        error=error,
+        tokens=get_token_usage(),
+    )
+    result.failure_category = classify_failure(result, messages)
+    return result
+
+
 def run_task(
     description: str,
     workspace: Path,
-    max_iterations: int = 10,
+    max_iterations: int = 12,
 ) -> TaskResult:
-    """Run the agent loop until done or max iterations."""
+    """Run the agent loop until tests pass, nudge limit hit, or max iterations."""
     workspace.mkdir(parents=True, exist_ok=True)
     reset_token_counter()
     messages: list[dict] = [
@@ -76,55 +98,66 @@ def run_task(
     ]
 
     last_output = ""
+    nudge_count = 0
+
     for iteration in range(1, max_iterations + 1):
-        messages = trim_context(messages)  # keep context under token limit
-        # After first iteration, remove write_file to force str_replace for fixes
-        if iteration == 1:
-            tools = TOOL_SCHEMAS
-        else:
-            tools = [t for t in TOOL_SCHEMAS if t["function"]["name"] != "write_file"]
-        
-        message = chat(messages, tools=TOOL_SCHEMAS)
+        messages = trim_context(messages)
+        tools = (
+            TOOL_SCHEMAS
+            if iteration == 1
+            else [t for t in TOOL_SCHEMAS if t["function"]["name"] != "write_file"]
+        )
+
+        message = chat(messages, tools=tools)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
 
         if not tool_calls:
-            success = _check_tests_passed(messages)
-            return TaskResult(
-                success=success,
-                output=last_output,
-                iterations=iteration,
-                tokens=get_token_usage(),
-            )
+            if tests_passed_in_history(messages):
+                return _finalize_result(True, last_output, iteration, messages)
+            nudge_count += 1
+            if nudge_count > MAX_NUDGES_WITHOUT_TESTS:
+                return _finalize_result(
+                    False,
+                    last_output,
+                    iteration,
+                    messages,
+                    error="stopped_early",
+                )
+            messages.append({"role": "user", "content": TESTS_NOT_PASSED_NUDGE})
+            continue
 
-        for tc in tool_calls:
-            try:
-                args = json.loads(tc["arguments"])
-            except json.JSONDecodeError:
-                args = {}
-            result = execute_tool(tc["name"], args, workspace)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result,
-                }
+        # One tool per turn — execute first only, inform model if more were requested
+        if len(tool_calls) > 1:
+            skipped = [tc["name"] for tc in tool_calls[1:]]
+            tool_calls = tool_calls[:1]
+            extra_note = (
+                f"\nNote: Only one tool per turn. Skipped: {', '.join(skipped)}. "
+                "Call again for the next action."
             )
+        else:
+            extra_note = ""
 
-    return TaskResult(
-        success=False,
-        output=last_output,
-        iterations=max_iterations,
+        tc = tool_calls[0]
+        try:
+            args = json.loads(tc["arguments"])
+        except json.JSONDecodeError:
+            args = {}
+        result = execute_tool(tc["name"], args, workspace) + extra_note
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result,
+            }
+        )
+
+    return _finalize_result(
+        False,
+        last_output,
+        max_iterations,
+        messages,
         error="max_iterations",
-        tokens=get_token_usage(),
     )
-
-
-def _check_tests_passed(messages: list[dict]) -> bool:
-    """Check if the most recent test run reported all tests passed."""
-    for msg in reversed(messages):
-        if msg.get("role") == "tool" and "* ALL TESTS PASSED" in msg.get("content", ""):
-            return True
-    return False
