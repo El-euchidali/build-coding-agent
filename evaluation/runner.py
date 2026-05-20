@@ -68,6 +68,9 @@ def run_single_task(task: Task, max_iterations: int = 10) -> TaskResult:
         result.error = None
     elif not result.success and result.error is None:
         result.error = "tests_failed"
+        from agent.failure import classify_failure
+
+        result.failure_category = classify_failure(result)
 
     return result
 

@@ -10,6 +10,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.llm import smoke_test
+from evaluation.humaneval_runner import (
+    load_humaneval_tasks,
+    run_humaneval_benchmark,
+    run_single_humaneval_task,
+    save_humaneval_results,
+)
 from evaluation.metrics import compute_metrics, save_results
 from evaluation.runner import load_tasks, run_benchmark, run_single_task
 
@@ -45,6 +51,65 @@ def cmd_task(task_id: str, max_iterations: int) -> int:
     return 0 if result.success else 1
 
 
+def cmd_humaneval(
+    task_id: str | None,
+    limit: int | None,
+    offset: int,
+    max_iterations: int,
+    timeout: float,
+) -> int:
+    if task_id:
+        tasks = load_humaneval_tasks(task_ids=[task_id])
+        if not tasks:
+            print(f"HumanEval task '{task_id}' not found.")
+            return 1
+        print(f"Running HumanEval {task_id}: {tasks[0].entry_point}")
+        result = run_single_humaneval_task(
+            tasks[0], max_iterations=max_iterations, timeout=timeout
+        )
+        status = "PASS" if result.success else "FAIL"
+        print(f"\nResult: {status} ({result.iterations} iterations)")
+        if result.tokens:
+            print(
+                f"Tokens: total={result.tokens.get('total', 'n/a')}"
+            )
+        if result.error:
+            print(f"Error: {result.error}")
+        results = [(task_id, result)]
+    else:
+        print("Running HumanEval benchmark...")
+        results = run_humaneval_benchmark(
+            limit=limit,
+            offset=offset,
+            max_iterations=max_iterations,
+            timeout=timeout,
+        )
+
+    metrics = compute_metrics(results)
+    out_path = save_humaneval_results(results, metrics)
+
+    print("\n=== HumanEval Summary ===")
+    print(f"Total:        {metrics['total']}")
+    print(f"Passed:       {metrics['passed']}")
+    print(f"Pass@1:       {metrics['success_rate']}%")
+    print(f"Avg iter:     {metrics['avg_iterations']}")
+    if metrics.get("total_tokens"):
+        print(f"Total tokens: {metrics['total_tokens']}")
+    print(f"Results:      {out_path}")
+
+    if metrics.get("failure_breakdown"):
+        print(f"Failure breakdown: {metrics['failure_breakdown']}")
+    if metrics["failures"]:
+        print("\nFailures:")
+        for f in metrics["failures"][:10]:
+            cat = f.get("category", "?")
+            print(f"  - {f['id']} [{cat}]: {f.get('error', 'unknown')[:80]}")
+        if len(metrics["failures"]) > 10:
+            print(f"  ... and {len(metrics['failures']) - 10} more")
+
+    return 0 if metrics["passed"] == metrics["total"] else 1
+
+
 def cmd_benchmark(limit: int | None, max_iterations: int) -> int:
     print("Running benchmark...")
     results = run_benchmark(limit=limit, max_iterations=max_iterations)
@@ -58,10 +123,13 @@ def cmd_benchmark(limit: int | None, max_iterations: int) -> int:
     print(f"Avg iter:{metrics['avg_iterations']}")
     print(f"Results: {out_path}")
 
+    if metrics.get("failure_breakdown"):
+        print(f"Failure breakdown: {metrics['failure_breakdown']}")
     if metrics["failures"]:
         print("\nFailures:")
         for f in metrics["failures"]:
-            print(f"  - {f['id']}: {f.get('error', 'unknown')}")
+            cat = f.get("category", "?")
+            print(f"  - {f['id']} [{cat}]: {f.get('error', 'unknown')[:80]}")
 
     return 0 if metrics["passed"] == metrics["total"] else 1
 
@@ -70,13 +138,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Coding Agent MVP")
     parser.add_argument("--smoke", action="store_true", help="Test LLM connection")
     parser.add_argument("--task", type=str, metavar="ID", help="Run single task (e.g. 001)")
-    parser.add_argument("--benchmark", action="store_true", help="Run full benchmark")
-    parser.add_argument("--limit", type=int, default=None, help="Limit benchmark tasks")
+    parser.add_argument("--benchmark", action="store_true", help="Run custom JSON benchmark")
+    parser.add_argument(
+        "--humaneval",
+        action="store_true",
+        help="Run HumanEval benchmark (official dataset)",
+    )
+    parser.add_argument(
+        "--humaneval-task",
+        type=str,
+        metavar="ID",
+        help="Run single HumanEval task (e.g. HumanEval/0)",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of tasks")
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip first N tasks (HumanEval or custom benchmark)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="Per-problem execution timeout for HumanEval verification (seconds)",
+    )
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=10,
-        help="Max agent iterations per task",
+        default=12,
+        help="Max agent iterations per task (default: 12)",
     )
     args = parser.parse_args()
 
@@ -86,6 +177,14 @@ def main() -> int:
         return cmd_task(args.task, args.max_iterations)
     if args.benchmark:
         return cmd_benchmark(args.limit, args.max_iterations)
+    if args.humaneval or args.humaneval_task:
+        return cmd_humaneval(
+            args.humaneval_task,
+            args.limit,
+            args.offset,
+            args.max_iterations,
+            args.timeout,
+        )
 
     parser.print_help()
     return 0
