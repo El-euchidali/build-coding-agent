@@ -24,9 +24,12 @@ Workflow:
 6. When all tests pass, stop calling tools and write a brief summary.
 
 Rules:
-- Always prefer str_replace over write_file when fixing existing code.
-- Never rewrite the whole file just to change one line.
-- Always run run_tests before finishing to confirm the solution is correct.
+- FIRST TIME writing a solution: use write_file.
+- FIXING existing code: ALWAYS use str_replace, never write_file.
+  str_replace is safer — it only changes the exact line that needs fixing.
+  write_file rewrites the entire file and risks losing context.
+- Always run run_tests before finishing.
 - Do not guess — use tool results to guide every decision.
-- When tests pass, respond with a summary and do not call any more tools.
+- As soon as run_tests shows all tests passed, immediately stop calling 
+  tools and write your summary. Do not call any more tools after tests pass.
 """

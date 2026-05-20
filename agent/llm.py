@@ -64,6 +64,40 @@ def trim_context(messages: list[dict], max_tokens: int = 50000) -> list[dict]:
 
     return messages
 
+# Module-level token counter
+_total_tokens = {"prompt": 0, "completion": 0, "total": 0}
+
+
+def reset_token_counter():
+    """Reset the token counter at the start of a new task."""
+    _total_tokens["prompt"] = 0
+    _total_tokens["completion"] = 0
+    _total_tokens["total"] = 0
+
+
+def get_token_usage() -> dict:
+    """Return accumulated token usage."""
+    return dict(_total_tokens)
+
+
+def chat(messages: list[dict], tools: list | None = None):
+    """Send chat completion and return the assistant message object."""
+    client = get_client()
+    model = os.environ.get("INNKUBE_MODEL", "gemma4-31b-it")
+    kwargs: dict = {"model": model, "messages": messages}
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    response = client.chat.completions.create(**kwargs)
+
+    # Accumulate token usage
+    if response.usage:
+        _total_tokens["prompt"]     += response.usage.prompt_tokens
+        _total_tokens["completion"] += response.usage.completion_tokens
+        _total_tokens["total"]      += response.usage.total_tokens
+
+    return response.choices[0].message
+
 
 if __name__ == "__main__":
     print(smoke_test())
