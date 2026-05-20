@@ -25,12 +25,21 @@ def compute_metrics(results: list[tuple[str, TaskResult]]) -> dict:
         for task_id, r in results
         if not r.success
     ]
+    
+    total_tokens = sum(
+        r.tokens.get("total", 0) for _, r in results if r.tokens
+    )
+    avg_tokens = round(total_tokens / total, 1) if total else 0
+
 
     return {
         "total": total,
         "passed": passed,
         "success_rate": round(passed / total * 100, 1),
         "avg_iterations": round(sum(iterations) / total, 2),
+        "failures": failures,
+        "avg_tokens": avg_tokens,
+        "total_tokens": total_tokens,
         "failures": failures,
     }
 

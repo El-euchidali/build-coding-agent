@@ -36,6 +36,8 @@ def cmd_task(task_id: str, max_iterations: int) -> int:
     result = run_single_task(task, max_iterations=max_iterations)
     status = "PASS" if result.success else "FAIL"
     print(f"\nResult: {status} ({result.iterations} iterations)")
+    if result.tokens:
+        print(f"Tokens: prompt={result.tokens['prompt']} completion={result.tokens['completion']} total={result.tokens['total']}")
     if result.output:
         print(f"Output:\n{result.output}")
     if result.error:

@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.llm import chat
+from agent.llm import chat , trim_context , reset_token_counter, get_token_usage
 from agent.prompts import SYSTEM_PROMPT
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 
@@ -13,6 +13,7 @@ class TaskResult:
     output: str
     iterations: int
     error: str | None = None
+    tokens: dict | None = None
 
 
 def _assistant_message_dict(message) -> dict:
@@ -65,6 +66,7 @@ def run_task(
 ) -> TaskResult:
     """Run the agent loop until done or max iterations."""
     workspace.mkdir(parents=True, exist_ok=True)
+    reset_token_counter()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -75,17 +77,26 @@ def run_task(
 
     last_output = ""
     for iteration in range(1, max_iterations + 1):
+        messages = trim_context(messages)  # keep context under token limit
+        # After first iteration, remove write_file to force str_replace for fixes
+        if iteration == 1:
+            tools = TOOL_SCHEMAS
+        else:
+            tools = [t for t in TOOL_SCHEMAS if t["function"]["name"] != "write_file"]
+        
         message = chat(messages, tools=TOOL_SCHEMAS)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
+
         if not tool_calls:
             success = _check_tests_passed(messages)
             return TaskResult(
                 success=success,
                 output=last_output,
                 iterations=iteration,
+                tokens=get_token_usage(),
             )
 
         for tc in tool_calls:
@@ -107,6 +118,7 @@ def run_task(
         output=last_output,
         iterations=max_iterations,
         error="max_iterations",
+        tokens=get_token_usage(),
     )
 
 
