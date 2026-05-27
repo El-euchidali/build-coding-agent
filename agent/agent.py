@@ -6,6 +6,7 @@ from agent.llm import chat, get_token_usage, reset_token_counter, trim_context
 from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 from agent.failure import classify_failure, tests_passed_in_history
+from agent.fsm import AgentState, get_tools_for_state, transition, detect_initial_state
 
 MAX_NUDGES_WITHOUT_TESTS = 3
 
@@ -86,7 +87,7 @@ def run_task(
     workspace: Path,
     max_iterations: int = 12,
 ) -> TaskResult:
-    """Run the agent loop until tests pass, nudge limit hit, or max iterations."""
+    """Run the agent loop with FSM control."""
     workspace.mkdir(parents=True, exist_ok=True)
     reset_token_counter()
     messages: list[dict] = [
@@ -99,14 +100,17 @@ def run_task(
 
     last_output = ""
     nudge_count = 0
+    state = detect_initial_state(workspace)
+    last_tool: str | None = None
+    last_result: str = ""
+    has_written = False 
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
-        tools = (
-            TOOL_SCHEMAS
-            if iteration == 1
-            else [t for t in TOOL_SCHEMAS if t["function"]["name"] != "write_file"]
-        )
+
+        # FSM: get tools valid for current state
+        tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
+        
 
         message = chat(messages, tools=tools)
         messages.append(_assistant_message_dict(message))
@@ -114,6 +118,26 @@ def run_task(
 
         tool_calls = _get_tool_calls(message)
         
+        
+
+        # FSM enforcement: reject tool calls not allowed in current state
+        allowed_names = [t["function"]["name"] for t in tools]
+        invalid = [tc for tc in tool_calls if tc["name"] not in allowed_names]
+        tool_calls = [tc for tc in tool_calls if tc["name"] in allowed_names]
+
+        if invalid and not tool_calls:
+            state_guidance = {
+                AgentState.EXPLORE: "You are in EXPLORE phase. Read and understand the code first. Use: list_files, read_file, view_file_range, search_code.",
+                AgentState.IMPLEMENT: "You are in IMPLEMENT phase. Write your solution using write_file (first time) or str_replace (fixes).",
+                AgentState.VERIFY: "You are in VERIFY phase. Run run_tests to check your solution.",
+                AgentState.FIX: "You are in FIX phase. Use str_replace to fix the specific failing line, then run_tests.",
+                AgentState.DONE: "Task is complete.",
+            }
+            messages.append({
+                "role": "user",
+                "content": state_guidance.get(state, f"Available tools: {', '.join(allowed_names)}")
+            })
+            continue
 
         if not tool_calls:
             if tests_passed_in_history(messages):
@@ -130,7 +154,7 @@ def run_task(
             messages.append({"role": "user", "content": TESTS_NOT_PASSED_NUDGE})
             continue
 
-        # One tool per turn — execute first only, inform model if more were requested
+        # One tool per turn
         if len(tool_calls) > 1:
             skipped = [tc["name"] for tc in tool_calls[1:]]
             tool_calls = tool_calls[:1]
@@ -146,14 +170,23 @@ def run_task(
             args = json.loads(tc["arguments"])
         except json.JSONDecodeError:
             args = {}
-        result = execute_tool(tc["name"], args, workspace) + extra_note
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            }
-        )
+
+        last_tool = tc["name"]
+        last_result = execute_tool(last_tool, args, workspace) + extra_note
+        if last_tool == "write_file":
+            has_written = True
+
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": last_result,
+        })
+
+        # FSM: transition to next state
+        state = transition(state, last_tool, last_result, iteration)
+
+        if state == AgentState.DONE:
+            return _finalize_result(True, last_output, iteration, messages)
 
     return _finalize_result(
         False,
