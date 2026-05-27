@@ -113,6 +113,7 @@ def run_task(
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
+        
 
         if not tool_calls:
             if tests_passed_in_history(messages):
