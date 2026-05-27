@@ -84,9 +84,12 @@ Do not reply with a summary until you see `* ALL TESTS PASSED` in the test outpu
 
 HUMANEVAL_TASK_ADDENDUM = """
 HumanEval notes:
-- Function to implement: `{entry_point}` in solution.py
-- Keep the exact imports and function signature from the stub file
-- Hidden official tests exist beyond what you see — satisfy ALL docstring requirements and edge cases
-- Efficient path: `write_file` once on solution.py → `run_tests` → fix with `str_replace` only if needed
-- Do not call `list_files` unless a test failed and you need to inspect files
+- The function stub is already in solution.py with the signature and docstring
+- Your FIRST action must be write_file to implement the complete function body
+- Do NOT call list_files or read_file first — go straight to write_file
+- Function to implement: `{entry_point}`
+- Keep the exact imports and function signature from the stub
+- After write_file, immediately call run_tests to verify
+- Fix any failures with str_replace only
+- Hidden official tests exist — handle all edge cases from the docstring
 """

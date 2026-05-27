@@ -113,7 +113,7 @@ def verify_humaneval(
     """
     prompt = problem["prompt"]
     if solution_code.startswith(prompt):
-        completion = solution_code[len(prompt) :]
+        completion = solution_code[len(prompt):]
         mode = "prefix"
         check_problem = problem
     else:
@@ -122,6 +122,11 @@ def verify_humaneval(
         check_problem = {**problem, "prompt": ""}
 
     result = check_correctness(check_problem, completion, timeout=timeout)
+
+    # Windows does not support signal.setitimer — fall back to pytest
+    if not result["passed"] and "signal" in result.get("result", ""):
+        raise OSError(result["result"])
+
     return result["passed"], result["result"], mode
 
 
