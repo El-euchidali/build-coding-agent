@@ -12,31 +12,46 @@ class AgentState(Enum):
     DONE      = "done"       # task complete
 
 
-# Strict tool restrictions per state
 STATE_TOOLS = {
     AgentState.EXPLORE: [
         "list_files",
+        "view_directory",
+        "find_files",
         "read_file",
         "view_file_range",
         "search_code",
+        "git_log",
+        "git_status",
     ],
     AgentState.IMPLEMENT: [
         "write_file",
         "read_file",
         "view_file_range",
+        "insert_at_line",
+        "create_directory",
     ],
     AgentState.VERIFY: [
         "run_tests",
         "run_code",
+        "run_command",
+        "git_diff",
+        "git_status",
     ],
     AgentState.FIX: [
         "str_replace",
         "read_file",
         "view_file_range",
         "search_code",
+        "find_files",
         "write_file",
+        "insert_at_line",
+        "delete_lines",
+        "git_diff",
+        "git_checkout_file",
     ],
-    AgentState.DONE: [],
+    AgentState.DONE: [
+        "git_commit",
+    ],
 }
 
 
