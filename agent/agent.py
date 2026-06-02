@@ -6,9 +6,8 @@ from agent.llm import chat, get_token_usage, reset_token_counter, trim_context
 from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 from agent.failure import classify_failure, tests_passed_in_history
-from agent.fsm import AgentState, get_tools_for_state, transition, detect_initial_state
 from agent.rag import CodebaseIndex, set_current_index
-
+from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
 
 MAX_NUDGES_WITHOUT_TESTS = 3
 
@@ -127,6 +126,8 @@ def run_task(
     last_tool: str | None = None
     last_result: str = ""
     has_written = False 
+    blocked_count = 0
+
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
@@ -148,6 +149,8 @@ def run_task(
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
+        #Debug
+        print(f"  iter {iteration} [{state.value}]: {[tc['name'] for tc in tool_calls]}")
 
         # FSM enforcement: reject tool calls not allowed in current state
         allowed_names = [t["function"]["name"] for t in tools]
@@ -155,11 +158,28 @@ def run_task(
         tool_calls = [tc for tc in tool_calls if tc["name"] in allowed_names]
 
         if invalid and not tool_calls:
+            blocked_count += 1
+            if blocked_count >= 3:
+                # Agent is stuck — force state transition
+                if state == AgentState.IMPLEMENT:
+                    state = AgentState.VERIFY
+                elif state == AgentState.EXPLORE:
+                    state = AgentState.IMPLEMENT
+                elif state == AgentState.PLAN:
+                    state = AgentState.EXPLORE
+                blocked_count = 0
+                messages.append({
+                    "role": "user",
+                    "content": f"Moving to {state.value} phase. Available tools: "
+                               f"{', '.join(STATE_TOOLS[state])}"
+                })
+                continue
             state_guidance = {
-                AgentState.EXPLORE: "You are in EXPLORE phase. Read and understand the code first. Use: list_files, read_file, view_file_range, search_code.",
-                AgentState.IMPLEMENT: "You are in IMPLEMENT phase. Write your solution using write_file (first time) or str_replace (fixes).",
+                AgentState.PLAN: "You are in PLAN phase. Use: explore_repo, search_codebase, search_and_read, find_files, file_outline.",
+                AgentState.EXPLORE: "You are in EXPLORE phase. Read and understand the code first. Use: list_files, read_file, search_code, search_codebase, run_tests.",
+                AgentState.IMPLEMENT: "You are in IMPLEMENT phase. Write your solution using write_file or fix with str_replace.",
                 AgentState.VERIFY: "You are in VERIFY phase. Run run_tests to check your solution.",
-                AgentState.FIX: "You are in FIX phase. Use str_replace to fix the specific failing line, then run_tests.",
+                AgentState.FIX: "You are in FIX phase. Use str_replace to fix the specific failing line.",
                 AgentState.DONE: "Task is complete.",
             }
             messages.append({
@@ -202,6 +222,7 @@ def run_task(
 
         last_tool = tc["name"]
         last_result = execute_tool(last_tool, args, workspace) + extra_note
+        blocked_count = 0
                 
         if last_tool == "write_file":
             has_written = True
