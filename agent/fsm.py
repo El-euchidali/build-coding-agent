@@ -20,8 +20,11 @@ STATE_TOOLS = {
         "read_file",
         "view_file_range",
         "search_code",
+        "search_codebase",
         "git_log",
         "git_status",
+        "run_tests",
+        "run_command",
     ],
     AgentState.IMPLEMENT: [
         "write_file",
@@ -42,12 +45,15 @@ STATE_TOOLS = {
         "read_file",
         "view_file_range",
         "search_code",
+        "search_codebase",
         "find_files",
         "write_file",
         "insert_at_line",
         "delete_lines",
         "git_diff",
         "git_checkout_file",
+        "run_tests",
+        "run_command",
     ],
     AgentState.DONE: [
         "git_commit",
@@ -117,17 +123,13 @@ def transition(
         else:
             return AgentState.FIX
 
-    # Wrote or fixed code — go verify
-    if last_tool == "write_file" and current in (AgentState.IMPLEMENT, AgentState.FIX):
+    # Wrote code — go verify
+    if last_tool == "write_file" and current in (AgentState.EXPLORE, AgentState.IMPLEMENT, AgentState.FIX):
         return AgentState.VERIFY
 
+    # Made a surgical fix — go verify
     if last_tool == "str_replace":
         return AgentState.VERIFY
-
-    # Explored enough — move to implement
-    if current == AgentState.EXPLORE and iteration >= 2:
-        if last_tool in ("read_file", "view_file_range", "search_code", "list_files"):
-            return AgentState.IMPLEMENT
 
     return current
 

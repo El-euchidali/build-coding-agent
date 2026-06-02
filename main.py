@@ -133,12 +133,23 @@ def cmd_benchmark(limit: int | None, max_iterations: int) -> int:
 
     return 0 if metrics["passed"] == metrics["total"] else 1
 
+def cmd_swebench(limit: int | None, max_iterations: int, run_eval: bool) -> int:
+    from evaluation.swebench_runner import run_swebench_benchmark
+    results, report = run_swebench_benchmark(
+        limit=limit,
+        max_iterations=max_iterations,
+        run_eval=run_eval,
+    )
+    return 0
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Coding Agent MVP")
     parser.add_argument("--smoke", action="store_true", help="Test LLM connection")
     parser.add_argument("--task", type=str, metavar="ID", help="Run single task (e.g. 001)")
     parser.add_argument("--benchmark", action="store_true", help="Run custom JSON benchmark")
+    parser.add_argument("--swebench", action="store_true", help="Run SWE-bench Verified benchmark")
+    parser.add_argument("--no-eval", action="store_true", help="Skip official evaluation (agent only)")
     parser.add_argument(
         "--humaneval",
         action="store_true",
@@ -166,8 +177,8 @@ def main() -> int:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=12,
-        help="Max agent iterations per task (default: 12)",
+        default=20,
+        help="Max agent iterations per task (default: 20)",
     )
     args = parser.parse_args()
 
@@ -185,6 +196,8 @@ def main() -> int:
             args.max_iterations,
             args.timeout,
         )
+    if args.swebench:
+        return cmd_swebench(args.limit, args.max_iterations, not args.no_eval)
 
     parser.print_help()
     return 0
