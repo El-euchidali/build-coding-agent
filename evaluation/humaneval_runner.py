@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import platform
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from dataclasses import asdict
@@ -110,6 +111,7 @@ def verify_humaneval(
     """
     Verify with official HumanEval check.
     Returns (passed, result_message, verification_mode).
+    Only called on Linux/Mac where signal.setitimer works.
     """
     prompt = problem["prompt"]
     if solution_code.startswith(prompt):
@@ -122,12 +124,8 @@ def verify_humaneval(
         check_problem = {**problem, "prompt": ""}
 
     result = check_correctness(check_problem, completion, timeout=timeout)
-
-    # Windows does not support signal.setitimer — fall back to pytest
-    if not result["passed"] and "signal" in result.get("result", ""):
-        raise OSError(result["result"])
-
     return result["passed"], result["result"], mode
+
 
 
 def _fallback_pytest_verify(workspace: Path) -> bool:
@@ -158,14 +156,21 @@ def run_single_humaneval_task(
     solution_code = (workspace / "solution.py").read_text(encoding="utf-8")
     problem = read_problems()[task.task_id]
 
-    try:
-        passed, check_msg, verify_mode = verify_humaneval(
-            problem, solution_code, timeout=timeout
-        )
-    except Exception as e:
+    if platform.system() == "Windows":
+        # Official checker uses Unix-only features (signal.setitimer)
+        # Always use pytest on Windows
         passed = _fallback_pytest_verify(workspace)
-        check_msg = str(e)
-        verify_mode = "pytest_fallback"
+        check_msg = "pytest_verify"
+        verify_mode = "pytest"
+    else:
+        try:
+            passed, check_msg, verify_mode = verify_humaneval(
+                problem, solution_code, timeout=timeout
+            )
+        except Exception as e:
+            passed = _fallback_pytest_verify(workspace)
+            check_msg = str(e)
+            verify_mode = "pytest_fallback"
 
     if passed:
         result.success = True

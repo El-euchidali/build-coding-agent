@@ -52,6 +52,9 @@ def trim_context(
     """
     if count_tokens(messages) <= max_tokens:
         return messages
+    
+    print(f"  [trim_context] triggered — {count_tokens(messages)} tokens > {max_tokens} limit, trimming...")
+
 
     if len(messages) <= 2 + keep_recent:
         return messages
@@ -61,6 +64,9 @@ def trim_context(
         # Drop oldest middle message (never system or task)
         trimmed = [trimmed[0], trimmed[1]] + trimmed[3:]
 
+    print(f"  [trim_context] done — reduced to {count_tokens(trimmed)} tokens, kept {len(trimmed)} messages")
+
+    
     return trimmed
 
 

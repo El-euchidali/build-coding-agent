@@ -7,6 +7,8 @@ from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 from agent.failure import classify_failure, tests_passed_in_history
 from agent.fsm import AgentState, get_tools_for_state, transition, detect_initial_state
+from agent.rag import CodebaseIndex, set_current_index
+
 
 MAX_NUDGES_WITHOUT_TESTS = 3
 
@@ -89,6 +91,17 @@ def run_task(
 ) -> TaskResult:
     """Run the agent loop with FSM control."""
     workspace.mkdir(parents=True, exist_ok=True)
+    
+    # Build RAG index if codebase is large enough
+    py_files = list(workspace.rglob("*.py"))
+    if len(py_files) > 3:
+        index = CodebaseIndex(workspace)
+        chunks = index.build()
+        print(f"  [RAG] indexed {chunks} chunks from {len(py_files)} files")
+        set_current_index(index)
+    else:
+        set_current_index(None)
+        
     reset_token_counter()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -111,14 +124,16 @@ def run_task(
         # FSM: get tools valid for current state
         tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
         
-
+        #Debug
+        print(f"  available: {[t['function']['name'] for t in tools]}")
+        
         message = chat(messages, tools=tools)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
-        
-        
+        #Debug
+        print(f"  iter {iteration} [{state.value}]: {[tc['name'] for tc in tool_calls]}")
 
         # FSM enforcement: reject tool calls not allowed in current state
         allowed_names = [t["function"]["name"] for t in tools]
@@ -173,6 +188,10 @@ def run_task(
 
         last_tool = tc["name"]
         last_result = execute_tool(last_tool, args, workspace) + extra_note
+        
+        #Debug
+        print(f"  result: {last_result[:150]}")
+                
         if last_tool == "write_file":
             has_written = True
 

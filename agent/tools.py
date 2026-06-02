@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 from execution.sandbox import run_python_file, run_pytest
+from agent.rag import search_codebase
+
 
 # ── Safety blocklist for run_command ─────────────────────────────────────────
 _BLOCKED_COMMANDS = [
@@ -111,6 +113,24 @@ TOOL_SCHEMAS = [
                     "query": {
                         "type": "string",
                         "description": "Text to search for",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    
+    {
+        "type": "function",
+        "function": {
+            "name": "search_codebase",
+            "description": "Semantic search over the codebase. Uses AI embeddings to find code related to your query even if the exact words don't match. Better than search_code for understanding what code does, not just matching text. Only available on larger codebases.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of what you are looking for, e.g. 'function that computes separability matrix'",
                     },
                 },
                 "required": ["query"],
@@ -586,6 +606,7 @@ _TOOLS_MAP = {
     "read_file":        read_file,
     "view_file_range":  view_file_range,
     "search_code":      search_code,
+    "search_codebase": search_codebase,
     # File Editing
     "write_file":       write_file,
     "str_replace":      str_replace,
