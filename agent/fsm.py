@@ -5,31 +5,49 @@ from pathlib import Path
 
 
 class AgentState(Enum):
-    EXPLORE   = "explore"    # understand the codebase
+    PLAN      = "plan"       # understand the task, search for relevant code
+    EXPLORE   = "explore"    # read specific files in detail
     IMPLEMENT = "implement"  # write the first solution
     VERIFY    = "verify"     # run tests
     FIX       = "fix"        # fix after test failure
     DONE      = "done"       # task complete
 
 
+# Tools available in each state
 STATE_TOOLS = {
+    AgentState.PLAN: [
+        "explore_repo",
+        "search_codebase",
+        "search_and_read",
+        "find_files",
+        "file_outline",
+        "git_log",
+    ],
     AgentState.EXPLORE: [
         "list_files",
         "view_directory",
         "find_files",
         "read_file",
+        "read_files",
         "view_file_range",
         "search_code",
         "search_codebase",
-        "git_log",
-        "git_status",
+        "search_and_read",
+        "explore_repo",
+        "file_outline",
+        "get_function",
         "run_tests",
         "run_command",
+        "git_log",
+        "git_status",
     ],
     AgentState.IMPLEMENT: [
         "write_file",
         "read_file",
+        "read_files",
         "view_file_range",
+        "file_outline",
+        "get_function",
         "insert_at_line",
         "create_directory",
     ],
@@ -42,18 +60,25 @@ STATE_TOOLS = {
     ],
     AgentState.FIX: [
         "str_replace",
+        "edit_and_verify",
+        "edit_files",
+        "search_and_replace_all",
         "read_file",
+        "read_files",
         "view_file_range",
         "search_code",
         "search_codebase",
+        "search_and_read",
         "find_files",
+        "file_outline",
+        "get_function",
         "write_file",
         "insert_at_line",
         "delete_lines",
-        "git_diff",
-        "git_checkout_file",
         "run_tests",
         "run_command",
+        "git_diff",
+        "git_checkout_file",
     ],
     AgentState.DONE: [
         "git_commit",
@@ -65,13 +90,19 @@ def detect_initial_state(workspace: Path) -> AgentState:
     """
     Detect the right starting state based on workspace contents.
 
-    - No solution.py        → EXPLORE
-    - Stub only (pass)      → IMPLEMENT
-    - Real code present     → VERIFY
+    - No solution.py + large codebase  → PLAN
+    - No solution.py + small codebase  → EXPLORE
+    - Stub only (pass)                 → IMPLEMENT
+    - Real code present                → VERIFY
     """
     solution = workspace / "solution.py"
 
     if not solution.exists():
+        # Count Python files to determine codebase size
+        py_files = list(workspace.rglob("*.py"))
+        py_count = sum(1 for f in py_files if ".git" not in f.parts)
+        if py_count > 10:
+            return AgentState.PLAN
         return AgentState.EXPLORE
 
     content = solution.read_text(encoding="utf-8")
@@ -124,12 +155,34 @@ def transition(
             return AgentState.FIX
 
     # Wrote code — go verify
-    if last_tool == "write_file" and current in (AgentState.EXPLORE, AgentState.IMPLEMENT, AgentState.FIX):
+    if last_tool == "write_file" and current in (
+        AgentState.PLAN, AgentState.EXPLORE,
+        AgentState.IMPLEMENT, AgentState.FIX,
+    ):
         return AgentState.VERIFY
 
     # Made a surgical fix — go verify
-    if last_tool == "str_replace":
+    if last_tool in ("str_replace", "edit_and_verify", "edit_files", "search_and_replace_all"):
         return AgentState.VERIFY
+
+    # PLAN → EXPLORE after first search/exploration
+    if current == AgentState.PLAN:
+        if last_tool in (
+            "explore_repo", "search_codebase", "search_and_read",
+            "find_files", "file_outline", "git_log",
+        ):
+            return AgentState.EXPLORE
+
+    # EXPLORE → IMPLEMENT after reading enough
+    if current == AgentState.EXPLORE and iteration >= 2:
+        if last_tool in (
+            "read_file", "read_files", "view_file_range",
+            "search_code", "search_codebase", "search_and_read",
+            "list_files", "find_files", "view_directory",
+            "file_outline", "get_function",
+            "git_log", "git_status",
+        ):
+            return AgentState.IMPLEMENT
 
     return current
 

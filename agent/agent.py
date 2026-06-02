@@ -84,6 +84,16 @@ def _finalize_result(
     return result
 
 
+def _detect_loop(messages: list[dict], window: int = 3) -> bool:
+    """Detect if the last N tool results contain the same error."""
+    recent = []
+    for msg in reversed(messages):
+        if msg.get("role") == "tool":
+            recent.append(msg["content"][:100])
+        if len(recent) >= window:
+            break
+    return len(recent) == window and len(set(recent)) == 1
+
 def run_task(
     description: str,
     workspace: Path,
@@ -121,19 +131,23 @@ def run_task(
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
 
+        # Loop detection: if same result 3 times, force different approach
+        if _detect_loop(messages):
+            messages.append({
+                "role": "user",
+                "content": "You have tried the same approach 3 times with the same result. "
+                           "Stop retrying and try a completely different approach. "
+                           "If tests cannot run, skip them and focus on reading the code and applying the fix."
+            })
+        
         # FSM: get tools valid for current state
         tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
-        
-        #Debug
-        print(f"  available: {[t['function']['name'] for t in tools]}")
         
         message = chat(messages, tools=tools)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
-        #Debug
-        print(f"  iter {iteration} [{state.value}]: {[tc['name'] for tc in tool_calls]}")
 
         # FSM enforcement: reject tool calls not allowed in current state
         allowed_names = [t["function"]["name"] for t in tools]
@@ -188,9 +202,6 @@ def run_task(
 
         last_tool = tc["name"]
         last_result = execute_tool(last_tool, args, workspace) + extra_note
-        
-        #Debug
-        print(f"  result: {last_result[:150]}")
                 
         if last_tool == "write_file":
             has_written = True
