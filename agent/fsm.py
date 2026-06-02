@@ -50,6 +50,9 @@ STATE_TOOLS = {
         "get_function",
         "insert_at_line",
         "create_directory",
+        "run_code",
+        "run_tests",
+        "run_command",
     ],
     AgentState.VERIFY: [
         "run_tests",
