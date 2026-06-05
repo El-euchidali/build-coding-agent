@@ -569,6 +569,14 @@ TOOL_SCHEMAS = [
             "reason": {"type": "string", "description": "Why you need this transition"},
         }, "required": ["target_state", "reason"]},
     }},
+    {"type": "function", "function": {
+        "name": "report_confidence",
+        "description": "Rate your confidence in your current fix before running tests. Score 1-10. Below 5: re-read the code first. Above 8: proceed to test immediately.",
+        "parameters": {"type": "object", "properties": {
+            "score": {"type": "integer", "description": "Confidence 1-10"},
+            "reason": {"type": "string", "description": "Why this score"},
+        }, "required": ["score", "reason"]},
+    }},
 ]
 
 
@@ -921,6 +929,15 @@ def git_checkout_file(workspace: Path, filepath: str) -> str:
     _resolve_path(workspace, filepath)
     return FileSystem(workspace).git("checkout", "--", filepath)
 
+def report_confidence(workspace: Path, score: int, reason: str) -> str:
+    if score < 1 or score > 10:
+        return "Error: score must be 1-10"
+    if score <= 4:
+        return f"Confidence {score}/10: LOW. Re-read the relevant code before proceeding. Reason: {reason}"
+    elif score <= 7:
+        return f"Confidence {score}/10: MEDIUM. Proceed with caution. Reason: {reason}"
+    else:
+        return f"Confidence {score}/10: HIGH. Proceed to verify. Reason: {reason}"
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
@@ -962,6 +979,7 @@ _TOOLS_MAP = {
     "git_commit":             git_commit,
     "git_log":                git_log,
     "git_checkout_file":      git_checkout_file,
+    "report_confidence":   report_confidence,
 }
 
 

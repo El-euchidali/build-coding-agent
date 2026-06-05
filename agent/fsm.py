@@ -60,6 +60,7 @@ STATE_TOOLS = {
         "run_command",
         "write_scratchpad",
         "read_scratchpad",
+        "report_confidence",
     ],
     AgentState.VERIFY: [
         "run_tests",
@@ -94,6 +95,7 @@ STATE_TOOLS = {
         "write_scratchpad",
         "read_scratchpad",
         "request_transition",
+        "report_confidence",
     ],
     AgentState.DONE: [
         "git_commit",
