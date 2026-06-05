@@ -119,9 +119,9 @@ class CodebaseIndex:
         all_chunks: list[dict] = []
         file_count = 0
 
-        for filepath in sorted(self.workspace.rglob("*.py")):
-            if ".git" in filepath.parts:
-                continue
+        from agent.filesystem import FileSystem
+        fs = FileSystem(self.workspace)
+        for filepath in fs.tracked_files("*.py"):
             if file_count >= max_files:
                 break
             chunks = _chunk_by_function(filepath, self.workspace)

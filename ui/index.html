@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coding Agent</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f7f6f3;
+        --surface: #ffffff;
+        --surface-hover: #f0efec;
+        --border: #e8e6e1;
+        --text: #1a1a1a;
+        --text-secondary: #6b6560;
+        --text-muted: #9b9590;
+        --accent: #c67a3c;
+        --accent-light: #fff3e8;
+        --accent-dark: #a05e28;
+        --green: #2d8659;
+        --green-light: #e8f5ee;
+        --red: #c03a2b;
+        --red-light: #fdeceb;
+        --blue: #2b6cb0;
+        --blue-light: #ebf4ff;
+        --purple: #6b46c1;
+        --purple-light: #f3eeff;
+        --teal: #0d7377;
+        --teal-light: #e6fafa;
+        --user-bg: #f0ede8;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+        --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+        --radius: 12px;
+        --radius-sm: 8px;
+        --font: "DM Sans", -apple-system, sans-serif;
+        --mono: "JetBrains Mono", "Fira Code", monospace;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: var(--font);
+        background: var(--bg);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* ── Header ─────────────────────────────────────── */
+      .header {
+        border-bottom: 1px solid var(--border);
+        padding: 12px 24px;
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(12px);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .logo-icon {
+        width: 30px;
+        height: 30px;
+        background: var(--accent);
+        border-radius: 7px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 15px;
+        font-weight: 600;
+        font-family: var(--mono);
+      }
+
+      .logo-text {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.3px;
+      }
+      .logo-badge {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--accent);
+        background: var(--accent-light);
+        padding: 2px 8px;
+        border-radius: 20px;
+      }
+
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .header-stat {
+        font-size: 12px;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .header-stat .val {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+
+      .btn-reset {
+        font-size: 12px;
+        color: var(--text-muted);
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 12px;
+        cursor: pointer;
+        font-family: var(--font);
+        transition: all 0.15s;
+      }
+
+      .btn-reset:hover {
+        background: var(--surface-hover);
+        color: var(--text);
+      }
+
+      /* ── Layout ─────────────────────────────────────── */
+      .layout {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* ── Sidebar ────────────────────────────────────── */
+      .sidebar {
+        width: 240px;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        overflow: hidden;
+      }
+
+      .sidebar-header {
+        padding: 12px 16px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .workspace-path {
+        padding: 8px 16px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-muted);
+        word-break: break-all;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .file-tree {
+        flex: 1;
+        overflow-y: auto;
+        padding: 6px 0;
+      }
+
+      .file-item {
+        padding: 3px 16px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-secondary);
+        cursor: default;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .file-item:hover {
+        background: var(--surface-hover);
+      }
+      .file-item.dir {
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      .file-count {
+        padding: 8px 16px;
+        font-size: 10px;
+        color: var(--text-muted);
+        border-top: 1px solid var(--border);
+      }
+
+      /* ── Chat Area ──────────────────────────────────── */
+      .chat-container {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      /* ── Messages ───────────────────────────────────── */
+      .message {
+        max-width: 720px;
+        animation: fadeIn 0.2s ease;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .message.user {
+        align-self: flex-end;
+      }
+
+      .message.assistant {
+        align-self: flex-start;
+      }
+
+      .msg-bubble {
+        padding: 12px 16px;
+        border-radius: 16px;
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+
+      .message.user .msg-bubble {
+        background: var(--accent);
+        color: white;
+        border-bottom-right-radius: 4px;
+      }
+
+      .message.assistant .msg-bubble {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-bottom-left-radius: 4px;
+        box-shadow: var(--shadow-sm);
+      }
+
+      .msg-bubble code {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: rgba(0, 0, 0, 0.06);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+
+      .message.user .msg-bubble code {
+        background: rgba(255, 255, 255, 0.2);
+      }
+
+      /* ── Tool Call Cards ────────────────────────────── */
+      .tool-card {
+        max-width: 720px;
+        align-self: flex-start;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        animation: fadeIn 0.2s ease;
+        box-shadow: var(--shadow-sm);
+      }
+
+      .tool-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.1s;
+      }
+
+      .tool-header:hover {
+        background: var(--surface-hover);
+      }
+
+      .tool-icon {
+        width: 20px;
+        height: 20px;
+        background: var(--teal);
+        border-radius: 5px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 10px;
+        font-weight: 700;
+        font-family: var(--mono);
+        flex-shrink: 0;
+      }
+
+      .tool-name {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text);
+      }
+
+      .tool-args {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--text-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tool-time {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--text-muted);
+        margin-left: auto;
+        flex-shrink: 0;
+      }
+
+      .tool-chevron {
+        color: var(--text-muted);
+        font-size: 12px;
+        transition: transform 0.2s;
+        flex-shrink: 0;
+      }
+
+      .tool-chevron.open {
+        transform: rotate(90deg);
+      }
+
+      .tool-result {
+        display: none;
+        padding: 10px 14px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-secondary);
+        background: var(--surface);
+        max-height: 200px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .tool-result.show {
+        display: block;
+      }
+
+      /* ── Thinking ───────────────────────────────────── */
+      .thinking-msg {
+        max-width: 720px;
+        align-self: flex-start;
+        font-size: 13px;
+        color: var(--text-muted);
+        font-style: italic;
+        padding: 4px 0;
+        animation: fadeIn 0.2s ease;
+      }
+
+      /* ── Typing Indicator ───────────────────────────── */
+      .typing {
+        align-self: flex-start;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        border-bottom-left-radius: 4px;
+        box-shadow: var(--shadow-sm);
+        animation: fadeIn 0.2s ease;
+      }
+
+      .typing-dots {
+        display: flex;
+        gap: 4px;
+      }
+
+      .typing-dot {
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        border-radius: 50%;
+        animation: typingBounce 1.4s ease infinite;
+      }
+
+      .typing-dot:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+      .typing-dot:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+
+      @keyframes typingBounce {
+        0%,
+        80%,
+        100% {
+          transform: translateY(0);
+          opacity: 0.4;
+        }
+        40% {
+          transform: translateY(-6px);
+          opacity: 1;
+        }
+      }
+
+      /* ── RAG Banner ─────────────────────────────────── */
+      .rag-msg {
+        align-self: center;
+        font-size: 11px;
+        color: var(--purple);
+        background: var(--purple-light);
+        padding: 4px 14px;
+        border-radius: 20px;
+        animation: fadeIn 0.2s ease;
+      }
+
+      /* ── Welcome ────────────────────────────────────── */
+      .welcome {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        color: var(--text-muted);
+      }
+
+      .welcome-icon {
+        font-size: 48px;
+        font-family: var(--mono);
+        opacity: 0.2;
+      }
+
+      .welcome-text {
+        font-size: 15px;
+        text-align: center;
+        max-width: 400px;
+        line-height: 1.6;
+      }
+
+      .welcome-suggestions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+        justify-content: center;
+      }
+
+      .suggestion {
+        font-size: 12px;
+        color: var(--accent);
+        background: var(--accent-light);
+        border: 1px solid #f0d5b8;
+        padding: 6px 14px;
+        border-radius: 20px;
+        cursor: pointer;
+        transition: all 0.15s;
+        font-family: var(--font);
+      }
+
+      .suggestion:hover {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+
+      /* ── Input Bar ──────────────────────────────────── */
+      .input-bar {
+        padding: 16px 24px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+        flex-shrink: 0;
+      }
+
+      .input-wrapper {
+        max-width: 720px;
+        margin: 0 auto;
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
+      }
+
+      .input-wrapper textarea {
+        flex: 1;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 16px;
+        font-family: var(--font);
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--text);
+        background: var(--bg);
+        resize: none;
+        outline: none;
+        min-height: 42px;
+        max-height: 150px;
+        transition:
+          border-color 0.2s,
+          box-shadow 0.2s;
+      }
+
+      .input-wrapper textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-light);
+      }
+
+      .send-btn {
+        width: 42px;
+        height: 42px;
+        border: none;
+        border-radius: 12px;
+        background: var(--accent);
+        color: white;
+        font-size: 18px;
+        cursor: pointer;
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+      .send-btn:hover {
+        background: var(--accent-dark);
+        transform: translateY(-1px);
+      }
+      .send-btn:active {
+        transform: translateY(0);
+      }
+      .send-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      /* ── Responsive ─────────────────────────────────── */
+      @media (max-width: 768px) {
+        .sidebar {
+          display: none;
+        }
+        .chat-messages {
+          padding: 16px;
+        }
+        .input-bar {
+          padding: 12px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">λ</div>
+        <span class="logo-text">Coding Agent</span>
+        <span class="logo-badge">FSM · RAG</span>
+      </div>
+      <div class="header-right">
+        <div class="header-stat">
+          Tokens <span class="val" id="tokens">0</span>
+        </div>
+        <button class="btn-reset" onclick="resetChat()">New Chat</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="sidebar">
+        <div class="sidebar-header">Workspace</div>
+        <div class="workspace-path" id="ws-path">Loading...</div>
+        <div class="file-tree" id="file-tree"></div>
+        <div class="file-count" id="file-count"></div>
+      </div>
+
+      <div class="chat-container">
+        <div class="chat-messages" id="chat">
+          <div class="welcome" id="welcome">
+            <div class="welcome-icon">λ</div>
+            <div class="welcome-text">
+              I'm your coding agent. I can read, understand, edit, and test code
+              in your workspace. Ask me anything.
+            </div>
+            <div class="welcome-suggestions">
+              <div class="suggestion" onclick="useSuggestion(this)">
+                Summarize this project
+              </div>
+              <div class="suggestion" onclick="useSuggestion(this)">
+                What files are in this repo?
+              </div>
+              <div class="suggestion" onclick="useSuggestion(this)">
+                Show me the main entry point
+              </div>
+              <div class="suggestion" onclick="useSuggestion(this)">
+                Find all TODO comments
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="input-bar">
+          <div class="input-wrapper">
+            <textarea
+              id="user-input"
+              placeholder="Ask me anything about your code..."
+              rows="1"
+              onkeydown="handleKey(event)"
+              oninput="autoGrow(this)"
+            ></textarea>
+            <button class="send-btn" id="send-btn" onclick="sendMessage()">
+              ↑
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let workspace = "";
+      let sending = false;
+      let sessionId = "session_" + Date.now();
+
+      function sendMessage() {
+        const input = document.getElementById("user-input");
+        const msg = input.value.trim();
+        if (!msg || sending) return;
+
+        // Remove welcome
+        const welcome = document.getElementById("welcome");
+        if (welcome) welcome.remove();
+
+        // Add user bubble
+        addBubble("user", msg);
+        input.value = "";
+        input.style.height = "42px";
+
+        sending = true;
+        document.getElementById("send-btn").disabled = true;
+
+        // Add typing indicator
+        const chat = document.getElementById("chat");
+        const typing = document.createElement("div");
+        typing.className = "typing";
+        typing.id = "typing";
+        typing.innerHTML =
+          '<div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+        chat.appendChild(typing);
+        scrollBottom();
+
+        // Stream response
+        fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: msg,
+            workspace: workspace,
+            session_id: sessionId,
+          }),
+        })
+          .then((response) => {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            function read() {
+              reader.read().then(({ done, value }) => {
+                if (done) {
+                  finishSend();
+                  return;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop();
+                for (const line of lines) {
+                  if (line.startsWith("data: ")) {
+                    try {
+                      handleEvent(JSON.parse(line.slice(6)));
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }
+                }
+                read();
+              });
+            }
+            read();
+          })
+          .catch((err) => {
+            console.error(err);
+            finishSend();
+          });
+      }
+
+      function handleEvent(data) {
+        const chat = document.getElementById("chat");
+        const typing = document.getElementById("typing");
+
+        if (data.type === "rag") {
+          const el = document.createElement("div");
+          el.className = "rag-msg";
+          el.textContent = "◆ " + data.info;
+          if (typing) chat.insertBefore(el, typing);
+          else chat.appendChild(el);
+          scrollBottom();
+          return;
+        }
+
+        if (data.type === "tool_call") {
+          if (typing) typing.remove();
+          addToolCard(data);
+          updateTokens(data.tokens);
+
+          // Re-add typing
+          const t = document.createElement("div");
+          t.className = "typing";
+          t.id = "typing";
+          t.innerHTML =
+            '<div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+          chat.appendChild(t);
+          scrollBottom();
+          return;
+        }
+
+        if (data.type === "thinking") {
+          const el = document.createElement("div");
+          el.className = "thinking-msg";
+          el.textContent = data.content;
+          if (typing) chat.insertBefore(el, typing);
+          else chat.appendChild(el);
+          scrollBottom();
+          return;
+        }
+
+        if (data.type === "response") {
+          if (typing) typing.remove();
+          addBubble("assistant", data.content);
+          updateTokens(data.tokens);
+          finishSend();
+          return;
+        }
+      }
+
+      function addBubble(role, content) {
+        const chat = document.getElementById("chat");
+        const msg = document.createElement("div");
+        msg.className = `message ${role}`;
+
+        // Simple markdown: **bold**, `code`, ```blocks```
+        let html = escapeHtml(content);
+        html = html.replace(
+          /```(\w*)\n([\s\S]*?)```/g,
+          '<pre style="background:var(--bg);padding:10px;border-radius:6px;margin:8px 0;overflow-x:auto;font-family:var(--mono);font-size:12px;">$2</pre>',
+        );
+        html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+        html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+        msg.innerHTML = `<div class="msg-bubble">${html}</div>`;
+        chat.appendChild(msg);
+        scrollBottom();
+      }
+
+      function addToolCard(data) {
+        const chat = document.getElementById("chat");
+        const id =
+          "tool-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+        const card = document.createElement("div");
+        card.className = "tool-card";
+
+        const argsStr = fmtArgs(data.args);
+        card.innerHTML = `
+    <div class="tool-header" onclick="toggleTool('${id}')">
+      <div class="tool-icon">⚡</div>
+      <span class="tool-name">${data.tool}</span>
+      <span class="tool-args">${argsStr}</span>
+      <span class="tool-time">${data.tool_elapsed}s</span>
+      <span class="tool-chevron" id="chev-${id}">▸</span>
+    </div>
+    <div class="tool-result" id="${id}">${escapeHtml(data.result)}</div>
+  `;
+        chat.appendChild(card);
+        scrollBottom();
+      }
+
+      function toggleTool(id) {
+        const el = document.getElementById(id);
+        const chev = document.getElementById("chev-" + id);
+        el.classList.toggle("show");
+        chev.classList.toggle("open");
+      }
+
+      function resetChat() {
+        sessionId = "session_" + Date.now();
+        fetch("/api/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        document.getElementById("chat").innerHTML = `
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon">λ</div>
+      <div class="welcome-text">
+        I'm your coding agent. I can read, understand, edit, and test code in your workspace. Ask me anything.
+      </div>
+      <div class="welcome-suggestions">
+        <div class="suggestion" onclick="useSuggestion(this)">Summarize this project</div>
+        <div class="suggestion" onclick="useSuggestion(this)">What files are in this repo?</div>
+        <div class="suggestion" onclick="useSuggestion(this)">Show me the main entry point</div>
+        <div class="suggestion" onclick="useSuggestion(this)">Find all TODO comments</div>
+      </div>
+    </div>
+  `;
+        document.getElementById("tokens").textContent = "0";
+      }
+
+      function useSuggestion(el) {
+        document.getElementById("user-input").value = el.textContent;
+        sendMessage();
+      }
+
+      function handleKey(e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage();
+        }
+      }
+
+      function autoGrow(el) {
+        el.style.height = "42px";
+        el.style.height = Math.min(el.scrollHeight, 150) + "px";
+      }
+
+      function updateTokens(tokens) {
+        if (tokens?.total)
+          document.getElementById("tokens").textContent =
+            tokens.total.toLocaleString();
+      }
+
+      function scrollBottom() {
+        const chat = document.getElementById("chat");
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function fmtArgs(args) {
+        if (!args) return "";
+        const e = Object.entries(args);
+        if (!e.length) return "";
+        return e
+          .map(([k, v]) => {
+            const s = String(v);
+            return s.length > 30 ? s.slice(0, 30) + "…" : s;
+          })
+          .join(", ");
+      }
+
+      function escapeHtml(text) {
+        const d = document.createElement("div");
+        d.textContent = text || "";
+        return d.innerHTML;
+      }
+
+      function finishSend() {
+        sending = false;
+        document.getElementById("send-btn").disabled = false;
+        const typing = document.getElementById("typing");
+        if (typing) typing.remove();
+        document.getElementById("user-input").focus();
+      }
+
+      // ── Load workspace ───────────────────────────────
+      function loadWorkspace() {
+        fetch("/api/workspace")
+          .then((r) => r.json())
+          .then((data) => {
+            workspace = data.workspace;
+            document.getElementById("ws-path").textContent = data.workspace;
+            document.getElementById("file-count").textContent =
+              `${data.total_files} files`;
+            const tree = document.getElementById("file-tree");
+            tree.innerHTML = "";
+            const groups = {};
+            data.files.forEach((f) => {
+              const parts = f.split(/[\/\\]/);
+              const dir = parts.length > 1 ? parts[0] : "";
+              if (!groups[dir]) groups[dir] = [];
+              groups[dir].push(f);
+            });
+            for (const dir of Object.keys(groups).sort()) {
+              if (dir) {
+                const d = document.createElement("div");
+                d.className = "file-item dir";
+                d.textContent = `▸ ${dir}/`;
+                tree.appendChild(d);
+              }
+              const files = groups[dir].slice(0, dir ? 5 : 10);
+              for (const f of files) {
+                const el = document.createElement("div");
+                el.className = "file-item";
+                const name = dir ? f.slice(dir.length + 1) : f;
+                el.textContent = dir ? `  ${name}` : name;
+                el.title = f;
+                tree.appendChild(el);
+              }
+              if (groups[dir].length > files.length) {
+                const m = document.createElement("div");
+                m.className = "file-item";
+                m.style.color = "var(--text-muted)";
+                m.textContent = `  … ${groups[dir].length - files.length} more`;
+                tree.appendChild(m);
+              }
+            }
+          });
+      }
+
+      window.addEventListener("DOMContentLoaded", loadWorkspace);
+    </script>
+  </body>
+</html>
