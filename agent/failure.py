@@ -1,7 +1,7 @@
 def tests_passed_in_history(messages: list[dict]) -> bool:
     """Check if any tool result reported all tests passed."""
     for msg in reversed(messages):
-        if msg.get("role") == "tool" and "* ALL TESTS PASSED" in msg.get("content", ""):
+        if msg.get("role") == "tool" and "[TEST_RESULT:PASS]" in msg.get("content", ""):
             return True
     return False
 
