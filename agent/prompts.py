@@ -87,6 +87,7 @@ SYSTEM_PROMPT = """You are an expert Python coding agent. You solve programming 
 - Prefer `read_files` over multiple `read_file` calls when you need to see several files.
 - Prefer `edit_files` over multiple `str_replace` calls when fixing the same pattern in several files.
 - Prefer `search_and_replace_all` when renaming a function or variable across the codebase.
+- After editing a file with str_replace, do NOT re-read the whole file. Use `git_diff` to see your changes instead — it is much more token-efficient.
 
 ## Stop condition
 
