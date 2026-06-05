@@ -9,3 +9,5 @@ workspace/
 workspace/humaneval/
 *.egg-info/
 .DS_Store
+
+docs/roadmap.md
