@@ -1,5 +1,6 @@
 import json
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.llm import chat, get_token_usage, reset_token_counter, trim_context
@@ -7,9 +8,37 @@ from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 from agent.failure import classify_failure, tests_passed_in_history
 from agent.rag import CodebaseIndex, set_current_index
+from agent.filesystem import FileSystem
 from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
 
 MAX_NUDGES_WITHOUT_TESTS = 3
+
+# System prompt for conversational mode — more flexible than task runner
+CONVERSATIONAL_PROMPT = """You are an expert Python coding agent. You help developers understand, navigate, edit, and debug their codebase through conversation.
+
+## Workspace
+You are working in: {workspace}
+
+## What you can do
+- Answer questions about the codebase — read files, search for patterns, explain code
+- Navigate large repos — find files, outline functions, explore structure
+- Write new code — create files, implement functions
+- Fix bugs — read errors, find the cause, apply surgical fixes
+- Run tests — execute code, run pytest, check results
+- Git operations — status, diff, commit, log
+
+## How to behave
+- Be conversational — explain what you are doing and why
+- Use tools when you need information — do not guess file contents
+- For simple questions, call the relevant tool and answer based on the result
+- For coding tasks, work step by step: read → understand → fix → verify
+- If you are unsure, ask the user for clarification
+- Keep responses concise but informative
+
+## Available tools
+You have access to tools for file reading, searching, editing, code execution, and git.
+Use them whenever you need concrete information — do not make up file contents or test results.
+"""
 
 
 @dataclass
@@ -20,6 +49,23 @@ class TaskResult:
     error: str | None = None
     tokens: dict | None = None
     failure_category: str | None = None
+
+
+@dataclass
+class ToolCall:
+    """Record of a single tool call during conversation."""
+    name: str
+    args: dict
+    result: str
+    elapsed: float
+
+
+@dataclass
+class MessageResponse:
+    """Response from handle_message."""
+    content: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tokens: dict | None = None
 
 
 def _assistant_message_dict(message) -> dict:
@@ -93,16 +139,205 @@ def _detect_loop(messages: list[dict], window: int = 3) -> bool:
             break
     return len(recent) == window and len(set(recent)) == 1
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Conversational mode — for the UI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def init_conversation(workspace: Path) -> list[dict]:
+    """Initialize a new conversation with system prompt and RAG index."""
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    # Build RAG index if codebase is large enough
+    fs = FileSystem(workspace)
+    py_files = [f for f in fs.tracked_files("*.py")]
+    if len(py_files) > 3:
+        index = CodebaseIndex(workspace)
+        chunks = index.build()
+        set_current_index(index)
+    else:
+        set_current_index(None)
+
+    prompt = CONVERSATIONAL_PROMPT.format(workspace=workspace.resolve())
+    return [{"role": "system", "content": prompt}]
+
+
+def handle_message(
+    user_message: str,
+    messages: list[dict],
+    workspace: Path,
+    max_tool_rounds: int = 15,
+) -> tuple[MessageResponse, list[dict]]:
+    """
+    Handle a single user message in conversational mode.
+
+    The LLM decides whether to use tools or just respond with text.
+    If it calls tools, we execute them and let the LLM respond again,
+    repeating until the LLM gives a text-only response or we hit max rounds.
+
+    Returns (response, updated_messages).
+    """
+    reset_token_counter()
+
+    # Add user message
+    messages.append({"role": "user", "content": user_message})
+    messages = trim_context(messages)
+
+    tool_history: list[ToolCall] = []
+
+    for round_num in range(max_tool_rounds):
+        start_time = time.time()
+
+        # Call LLM with all tools available — it decides what to use
+        message = chat(messages, tools=TOOL_SCHEMAS)
+        elapsed = round(time.time() - start_time, 1)
+
+        # Add assistant message to history
+        messages.append(_assistant_message_dict(message))
+
+        # Extract tool calls
+        tool_calls = _get_tool_calls(message)
+
+        # No tool calls — LLM is responding with text, we are done
+        if not tool_calls:
+            return MessageResponse(
+                content=message.content or "",
+                tool_calls=tool_history,
+                tokens=get_token_usage(),
+            ), messages
+
+        # Execute first tool call (one at a time for feedback)
+        tc = tool_calls[0]
+        try:
+            args = json.loads(tc["arguments"])
+        except json.JSONDecodeError:
+            args = {}
+
+        tool_start = time.time()
+        result = execute_tool(tc["name"], args, workspace)
+        tool_elapsed = round(time.time() - tool_start, 1)
+
+        # Record the tool call
+        tool_history.append(ToolCall(
+            name=tc["name"],
+            args=args,
+            result=result[:800],
+            elapsed=tool_elapsed,
+        ))
+
+        # Add tool result to conversation
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": result,
+        })
+
+    # Max rounds reached — return whatever we have
+    return MessageResponse(
+        content="I reached the maximum number of tool calls. Let me know if you want me to continue.",
+        tool_calls=tool_history,
+        tokens=get_token_usage(),
+    ), messages
+
+
+def handle_message_streaming(
+    user_message: str,
+    messages: list[dict],
+    workspace: Path,
+    max_tool_rounds: int = 15,
+):
+    """
+    Streaming version of handle_message.
+    Yields events as the agent thinks and uses tools.
+    Returns updated messages list via the final event.
+    """
+    reset_token_counter()
+
+    # Add user message
+    messages.append({"role": "user", "content": user_message})
+    messages = trim_context(messages)
+
+    for round_num in range(max_tool_rounds):
+        start_time = time.time()
+
+        message = chat(messages, tools=TOOL_SCHEMAS)
+        elapsed = round(time.time() - start_time, 1)
+
+        messages.append(_assistant_message_dict(message))
+
+        tool_calls = _get_tool_calls(message)
+
+        # No tool calls — final text response
+        if not tool_calls:
+            yield {
+                "type": "response",
+                "content": message.content or "",
+                "tokens": get_token_usage(),
+                "elapsed": elapsed,
+            }
+            return
+
+        # Execute first tool call
+        tc = tool_calls[0]
+        try:
+            args = json.loads(tc["arguments"])
+        except json.JSONDecodeError:
+            args = {}
+
+        tool_start = time.time()
+        result = execute_tool(tc["name"], args, workspace)
+        tool_elapsed = round(time.time() - tool_start, 1)
+
+        # Yield tool call event
+        yield {
+            "type": "tool_call",
+            "tool": tc["name"],
+            "args": args,
+            "result": result[:800],
+            "elapsed": elapsed,
+            "tool_elapsed": tool_elapsed,
+            "round": round_num + 1,
+            "tokens": get_token_usage(),
+        }
+
+        # If LLM also included text content, yield it
+        if message.content:
+            yield {
+                "type": "thinking",
+                "content": message.content,
+            }
+
+        # Add tool result to conversation
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": result,
+        })
+
+    # Max rounds
+    yield {
+        "type": "response",
+        "content": "I reached the maximum number of tool calls. Let me know if you want me to continue.",
+        "tokens": get_token_usage(),
+        "elapsed": 0,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Autonomous mode — for benchmarks (unchanged)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def run_task(
     description: str,
     workspace: Path,
     max_iterations: int = 12,
 ) -> TaskResult:
-    """Run the agent loop with FSM control."""
+    """Run the agent loop with FSM control. Used for benchmarks."""
     workspace.mkdir(parents=True, exist_ok=True)
-    
+
     # Build RAG index if codebase is large enough
-    py_files = list(workspace.rglob("*.py"))
+    fs = FileSystem(workspace)
+    py_files = [f for f in fs.tracked_files("*.py")]
     if len(py_files) > 3:
         index = CodebaseIndex(workspace)
         chunks = index.build()
@@ -110,7 +345,7 @@ def run_task(
         set_current_index(index)
     else:
         set_current_index(None)
-        
+
     reset_token_counter()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -125,14 +360,13 @@ def run_task(
     state = detect_initial_state(workspace)
     last_tool: str | None = None
     last_result: str = ""
-    has_written = False 
+    has_written = False
     blocked_count = 0
-
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
 
-        # Loop detection: if same result 3 times, force different approach
+        # Loop detection
         if _detect_loop(messages):
             messages.append({
                 "role": "user",
@@ -140,19 +374,17 @@ def run_task(
                            "Stop retrying and try a completely different approach. "
                            "If tests cannot run, skip them and focus on reading the code and applying the fix."
             })
-        
+
         # FSM: get tools valid for current state
         tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
-        
+
         message = chat(messages, tools=tools)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
         tool_calls = _get_tool_calls(message)
-        #Debug
-        print(f"  iter {iteration} [{state.value}]: {[tc['name'] for tc in tool_calls]}")
 
-        # FSM enforcement: reject tool calls not allowed in current state
+        # FSM enforcement
         allowed_names = [t["function"]["name"] for t in tools]
         invalid = [tc for tc in tool_calls if tc["name"] not in allowed_names]
         tool_calls = [tc for tc in tool_calls if tc["name"] in allowed_names]
@@ -160,7 +392,6 @@ def run_task(
         if invalid and not tool_calls:
             blocked_count += 1
             if blocked_count >= 3:
-                # Agent is stuck — force state transition
                 if state == AgentState.IMPLEMENT:
                     state = AgentState.VERIFY
                 elif state == AgentState.EXPLORE:
@@ -223,7 +454,7 @@ def run_task(
         last_tool = tc["name"]
         last_result = execute_tool(last_tool, args, workspace) + extra_note
         blocked_count = 0
-                
+
         if last_tool == "write_file":
             has_written = True
 

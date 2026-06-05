@@ -6,6 +6,7 @@ from pathlib import Path
 
 from execution.sandbox import run_python_file, run_pytest
 from agent.rag import search_codebase
+from agent.filesystem import FileSystem
 
 
 # ── Safety blocklist for run_command ─────────────────────────────────────────
@@ -563,44 +564,28 @@ def _run_git(workspace: Path, args: list[str]) -> str:
 # ── File Navigation ───────────────────────────────────────────────────────────
 
 def list_files(workspace: Path) -> str:
-    files = sorted(workspace.rglob("*"))
-    result = "\n".join(
-        str(f.relative_to(workspace))
-        for f in files
-        if f.is_file() and ".git" not in f.parts
-    )
-    return result or "(empty workspace)"
+    fs = FileSystem(workspace)
+    files = [str(f.relative_to(workspace)) for f in fs.tracked_files()]
+    return "\n".join(files) or "(empty workspace)"
 
 
 def view_directory(workspace: Path, dirpath: str = ".") -> str:
-    target = (workspace / dirpath).resolve()
-    if not target.exists():
-        return f"Error: {dirpath} not found"
-    results = []
-    for item in sorted(target.iterdir()):
-        if item.name.startswith("."):
-            continue
-        if item.is_dir():
-            results.append(f"  {item.name}/")
-            try:
-                for subitem in sorted(item.iterdir()):
-                    if not subitem.name.startswith("."):
-                        prefix = "  " if subitem.is_dir() else "  "
-                        suffix = "/" if subitem.is_dir() else ""
-                        results.append(f"    {subitem.name}{suffix}")
-            except PermissionError:
-                pass
-        else:
-            results.append(f"  {item.name}")
-    return "\n".join(results[:100]) or "(empty directory)"
+    fs = FileSystem(workspace)
+    items = fs.list_directory(dirpath)
+    if not items:
+        return f"Error: {dirpath} not found or empty"
+    lines = []
+    for item in items:
+        indent = "  " * (item["depth"] + 1)
+        suffix = "/" if item["type"] == "dir" else ""
+        lines.append(f"{indent}{item['name']}{suffix}")
+    return "\n".join(lines)
 
 
 def find_files(workspace: Path, pattern: str) -> str:
-    results = []
-    for f in sorted(workspace.rglob(pattern)):
-        if f.is_file() and ".git" not in f.parts:
-            results.append(str(f.relative_to(workspace)))
-    return "\n".join(results[:50]) or f"No files found matching '{pattern}'"
+    fs = FileSystem(workspace)
+    files = [str(f.relative_to(workspace)) for f in fs.tracked_files(pattern)]
+    return "\n".join(files[:50]) or f"No files found matching '{pattern}'"
 
 
 def read_file(workspace: Path, filepath: str) -> str:
@@ -648,19 +633,11 @@ def view_file_range(
 
 
 def search_code(workspace: Path, query: str) -> str:
-    results = []
-    for filepath in sorted(workspace.rglob("*")):
-        if not filepath.is_file() or ".git" in filepath.parts:
-            continue
-        try:
-            lines = filepath.read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError:
-            continue
-        for i, line in enumerate(lines, 1):
-            if query.lower() in line.lower():
-                rel = filepath.relative_to(workspace)
-                results.append(f"{rel}:{i}: {line.rstrip()}")
-    return "\n".join(results[:100]) if results else f"No matches found for '{query}'"
+    fs = FileSystem(workspace)
+    results = fs.search(query)
+    if not results:
+        return f"No matches found for '{query}'"
+    return "\n".join(f"{path}:{line}: {text}" for path, line, text in results)
 
 
 def file_outline(workspace: Path, filepath: str) -> str:
@@ -727,43 +704,19 @@ def get_function(workspace: Path, filepath: str, name: str) -> str:
 # ── Batch Tools ───────────────────────────────────────────────────────────────
 
 def search_and_read(workspace: Path, query: str, context_lines: int = 10) -> str:
-    """Search for a pattern, then show surrounding lines for each match."""
-    results = []
-    for filepath in sorted(workspace.rglob("*")):
-        if not filepath.is_file() or ".git" in filepath.parts:
-            continue
-        try:
-            lines = filepath.read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError:
-            continue
-        for i, line in enumerate(lines):
-            if query.lower() in line.lower():
-                rel = filepath.relative_to(workspace)
-                start = max(0, i - context_lines)
-                end = min(len(lines), i + context_lines + 1)
-                context = "\n".join(
-                    f"{j+1:4d} | {lines[j]}" for j in range(start, end)
-                )
-                results.append(f"### {rel}:{i+1}\n{context}\n")
-                if len(results) >= 5:
-                    break
-        if len(results) >= 5:
-            break
-    return "\n".join(results) if results else f"No matches found for '{query}'"
+    fs = FileSystem(workspace)
+    return fs.search_with_context(query, context_lines)
 
 
 def edit_and_verify(workspace: Path, filepath: str, old_str: str, new_str: str) -> str:
-    """Apply str_replace then immediately show git_diff."""
     result = str_replace(workspace, filepath, old_str, new_str)
     if result.startswith("Error"):
         return result
-    diff = _run_git(workspace, ["diff"])
-    patch = diff if diff != "(no output)" else "(no diff — file may not be tracked by git)"
-    return f"{result}\n\n--- git diff ---\n{patch}"
+    diff = FileSystem(workspace).git("diff")
+    return f"{result}\n\n--- git diff ---\n{diff}"
 
 
 def edit_files(workspace: Path, edits: list[dict]) -> str:
-    """Apply multiple str_replace edits across files in one call (max 5)."""
     results = []
     for edit in edits[:5]:
         fp = edit.get("filepath", "")
@@ -771,37 +724,31 @@ def edit_files(workspace: Path, edits: list[dict]) -> str:
         new = edit.get("new_str", "")
         result = str_replace(workspace, fp, old, new)
         results.append(f"{fp}: {result}")
-
-    # Show combined diff
-    diff = _run_git(workspace, ["diff"])
+    diff = FileSystem(workspace).git("diff")
     if diff and diff != "(no output)":
         results.append(f"\n--- git diff ---\n{diff}")
-
     return "\n".join(results)
 
 
 def search_and_replace_all(workspace: Path, old_str: str, new_str: str) -> str:
-    """Find and replace a string across all files in the workspace."""
+    fs = FileSystem(workspace)
     replaced = []
-    for filepath in sorted(workspace.rglob("*")):
-        if not filepath.is_file() or ".git" in filepath.parts:
+    for filepath in fs.tracked_files():
+        if not filepath.is_file():
             continue
         try:
             content = filepath.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, OSError):
             continue
         count = content.count(old_str)
         if count > 0:
             new_content = content.replace(old_str, new_str)
             filepath.write_text(new_content, encoding="utf-8")
-            rel = filepath.relative_to(workspace)
+            rel = str(filepath.relative_to(workspace))
             replaced.append(f"{rel}: {count} replacement(s)")
-
     if not replaced:
         return f"'{old_str}' not found in any file"
-
-    # Show combined diff
-    diff = _run_git(workspace, ["diff"])
+    diff = fs.git("diff")
     result = f"Replaced in {len(replaced)} file(s):\n" + "\n".join(replaced)
     if diff and diff != "(no output)":
         result += f"\n\n--- git diff ---\n{diff}"
@@ -809,34 +756,8 @@ def search_and_replace_all(workspace: Path, old_str: str, new_str: str) -> str:
 
 
 def explore_repo(workspace: Path) -> str:
-    """Show repo structure, key directories, and Python file count."""
-    file_count = 0
-    py_count = 0
-    for item in workspace.rglob("*"):
-        if ".git" in item.parts:
-            continue
-        if item.is_file():
-            file_count += 1
-            if item.suffix == ".py":
-                py_count += 1
-
-    dirs = []
-    files = []
-    for item in sorted(workspace.iterdir()):
-        if item.name.startswith("."):
-            continue
-        if item.is_dir():
-            sub_count = sum(1 for f in item.rglob("*.py") if ".git" not in f.parts)
-            dirs.append(f"  {item.name}/ ({sub_count} .py files)")
-        else:
-            files.append(f"  {item.name}")
-
-    output = f"Repository: {file_count} files total, {py_count} Python files\n\n"
-    output += "Directories:\n" + "\n".join(dirs[:20]) + "\n"
-    if files:
-        output += "\nRoot files:\n" + "\n".join(files[:10]) + "\n"
-    return output
-
+    fs = FileSystem(workspace)
+    return fs.summary()
 
 # ── File Editing ──────────────────────────────────────────────────────────────
 
@@ -928,26 +849,22 @@ def run_command(workspace: Path, command: str) -> str:
 # ── Git Operations ────────────────────────────────────────────────────────────
 
 def git_status(workspace: Path) -> str:
-    return _run_git(workspace, ["status"])
-
+    return FileSystem(workspace).git("status")
 
 def git_diff(workspace: Path) -> str:
-    result = _run_git(workspace, ["diff"])
-    return result or "(no changes since last commit)"
-
+    return FileSystem(workspace).git("diff") or "(no changes)"
 
 def git_commit(workspace: Path, message: str) -> str:
-    _run_git(workspace, ["add", "."])
-    return _run_git(workspace, ["commit", "-m", message])
-
+    fs = FileSystem(workspace)
+    fs.git("add", ".")
+    return fs.git("commit", "-m", message)
 
 def git_log(workspace: Path, n: int = 5) -> str:
-    return _run_git(workspace, ["log", "--oneline", f"-{n}"])
-
+    return FileSystem(workspace).git("log", "--oneline", f"-{n}")
 
 def git_checkout_file(workspace: Path, filepath: str) -> str:
     _resolve_path(workspace, filepath)
-    return _run_git(workspace, ["checkout", "--", filepath])
+    return FileSystem(workspace).git("checkout", "--", filepath)
 
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
