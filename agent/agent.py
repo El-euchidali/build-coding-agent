@@ -425,7 +425,9 @@ def run_task(
         # FSM: get tools valid for current state
         tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
 
-        message = chat(messages, tools=tools)
+        # Use light model for exploration, full model for implementation/fixing
+        use_light = state in (AgentState.PLAN, AgentState.EXPLORE)
+        message = chat(messages, tools=tools, use_light=use_light)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 

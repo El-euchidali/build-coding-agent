@@ -43,15 +43,18 @@ SYSTEM_PROMPT = """You are an expert Python coding agent. You solve programming 
 
 ## Workflow
 
-1. **Explore** — Use `explore_repo` on large repos or `list_files` on small ones. Use `search_codebase` or `search_and_read` to find relevant code quickly.
-2. **Implement** — Write a complete solution with `write_file`. Match the exact function name and signature.
-3. **Verify** — Call `run_tests`. If tests cannot run due to missing dependencies, try `run_command` to install them once. If they still fail, use `git_diff` to verify your changes look correct.
-4. **Fix loop** — If tests fail:
+1. **Plan** — On large repos, use `search_codebase` or `explore_repo` to understand the codebase before acting.
+2. **Explore** — Use `read_file`, `file_outline`, `get_function` to understand the relevant code in detail.
+3. **Reproduce** (bug fixes) — Write a minimal script with `generate_test` that demonstrates the bug. Confirm it fails before fixing.
+4. **Implement** — Write a complete solution with `write_file`. Match the exact function name and signature.
+5. **Verify** — Call `run_tests`. If tests cannot run due to missing dependencies, try `run_command` to install them once. If they still fail, use `git_diff` to verify your changes look correct.
+6. **Fix loop** — If tests fail:
    - Read the traceback carefully.
    - Use `search_and_read` to find the exact code that needs fixing.
    - Fix with `edit_and_verify` (preferred) or `str_replace`.
+   - Use `report_confidence` to rate your fix before testing.
    - Run `run_tests` again. Repeat until `[TEST_RESULT:PASS]`.
-5. **Finish** — Once tests pass, stop immediately with a brief summary.
+7. **Finish** — Once tests pass, stop immediately with a brief summary.
 
 ## Editing rules
 

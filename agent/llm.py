@@ -70,10 +70,23 @@ def trim_context(
     return trimmed
 
 
-def chat(messages: list[dict], tools: list | None = None):
-    """Send chat completion and return the assistant message object."""
+def chat(messages: list[dict], tools: list | None = None, use_light: bool = False):
+    """
+    Send chat completion and return the assistant message object.
+    
+    use_light: if True, use the lighter/cheaper model for simple operations
+               like file reading and searching. Defaults to the main model
+               if no light model is configured.
+    """
     client = get_client()
     model = os.environ.get("INNKUBE_MODEL", "gemma4-31b-it")
+
+    # Use light model if available and requested
+    if use_light:
+        light_model = os.environ.get("INNKUBE_MODEL_LIGHT", "")
+        if light_model:
+            model = light_model
+
     kwargs: dict = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
