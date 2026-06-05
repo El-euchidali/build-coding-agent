@@ -159,12 +159,76 @@ class CodebaseIndex:
             )
 
         self.indexed_chunks = len(all_chunks)
+        self.build_file_summaries()
         return self.indexed_chunks
 
+    def build_file_summaries(self) -> int:
+        """Build file-level summaries for two-step retrieval."""
+        embedder = _get_embedder()
+
+        from agent.filesystem import FileSystem
+        fs = FileSystem(self.workspace)
+
+        summaries = []
+        for filepath in fs.tracked_files("*.py"):
+            try:
+                content = filepath.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+
+            rel = str(filepath.relative_to(self.workspace))
+
+            # Build summary: imports + function/class names
+            lines = content.splitlines()
+            imports = [l for l in lines[:30] if l.startswith(("import ", "from "))]
+            try:
+                tree = ast.parse(content)
+                names = [node.name for node in ast.walk(tree)
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+            except SyntaxError:
+                names = []
+
+            summary = f"File: {rel}\n"
+            if imports:
+                summary += "Imports: " + ", ".join(imports[:10]) + "\n"
+            if names:
+                summary += "Defines: " + ", ".join(names[:20]) + "\n"
+            summary += f"Lines: {len(lines)}\n"
+
+            summary_id = hashlib.md5(f"summary:{rel}".encode()).hexdigest()
+            summaries.append({"id": summary_id, "text": summary, "file": rel})
+
+        if not summaries:
+            return 0
+
+        # Create file summaries collection
+        coll_name = "files_" + hashlib.md5(str(self.workspace).encode()).hexdigest()[:8]
+        try:
+            self.client.delete_collection(coll_name)
+        except Exception:
+            pass
+        self.file_collection = self.client.create_collection(coll_name)
+
+        texts = [s["text"] for s in summaries]
+        embeddings = embedder.encode(texts, batch_size=64, show_progress_bar=False).tolist()
+
+        batch_size = 5000
+        for start in range(0, len(summaries), batch_size):
+            end = min(start + batch_size, len(summaries))
+            self.file_collection.add(
+                ids=[s["id"] for s in summaries[start:end]],
+                documents=texts[start:end],
+                embeddings=embeddings[start:end],
+                metadatas=[{"file": s["file"]} for s in summaries[start:end]],
+            )
+
+        return len(summaries)
+    
     def search(self, query: str, n_results: int = 5) -> str:
         """
-        Semantic search for relevant code. Returns formatted results with
-        file paths and line numbers so the agent can read the exact location.
+        Two-step semantic search:
+        1. Find relevant files via file summaries
+        2. Find relevant chunks within those files
         """
         if self.indexed_chunks == 0:
             return "Codebase index is empty."
@@ -172,23 +236,53 @@ class CodebaseIndex:
         embedder = _get_embedder()
         query_vec = embedder.encode([query]).tolist()
 
+        # Step 1: Find relevant files (if file summaries available)
+        relevant_files = None
+        if hasattr(self, 'file_collection'):
+            try:
+                file_results = self.file_collection.query(
+                    query_embeddings=query_vec,
+                    n_results=min(10, self.indexed_chunks),
+                )
+                if file_results["metadatas"] and file_results["metadatas"][0]:
+                    relevant_files = [m["file"] for m in file_results["metadatas"][0]]
+            except Exception:
+                pass
+
+        # Step 2: Search chunks, prioritizing relevant files
         results = self.collection.query(
             query_embeddings=query_vec,
-            n_results=min(n_results, self.indexed_chunks),
+            n_results=min(n_results * 2, self.indexed_chunks),
         )
 
         if not results["documents"] or not results["documents"][0]:
             return f"No relevant code found for: {query}"
 
+        # Rank: chunks from relevant files first
         output = []
+        seen = set()
         for i, doc in enumerate(results["documents"][0]):
             meta = results["metadatas"][0][i]
-            output.append(
+            key = f"{meta['file']}:{meta['start_line']}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # Prioritize chunks from files identified in step 1
+            is_priority = relevant_files and meta["file"] in relevant_files
+            entry = (
                 f"### {meta['file']}:{meta['start_line']}-{meta['end_line']} "
                 f"({meta['name']})\n{doc}\n"
             )
+            if is_priority:
+                output.insert(0, entry)
+            else:
+                output.append(entry)
 
-        return "\n".join(output)
+            if len(output) >= n_results:
+                break
+
+        return "\n".join(output[:n_results])
 
 
 # Global index for the current task (set by the runner)

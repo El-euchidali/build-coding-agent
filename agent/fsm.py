@@ -45,6 +45,7 @@ STATE_TOOLS = {
         "write_scratchpad",
         "read_scratchpad",
         "request_transition",
+        "generate_test",
     ],
     AgentState.IMPLEMENT: [
         "write_file",
@@ -96,6 +97,7 @@ STATE_TOOLS = {
         "read_scratchpad",
         "request_transition",
         "report_confidence",
+        "generate_test",
     ],
     AgentState.DONE: [
         "git_commit",

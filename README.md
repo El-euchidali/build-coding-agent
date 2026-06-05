@@ -83,23 +83,23 @@ python main.py --swebench --limit 1 --no-eval # generate patches
 # Official evaluation requires WSL/Linux + Docker
 ```
 
-## Tools (24)
+## Tools (29)
 
 | Category       | Tools                                                                             |
 | -------------- | --------------------------------------------------------------------------------- |
 | **Navigation** | `list_files`, `view_directory`, `find_files`, `explore_repo`                      |
 | **Reading**    | `read_file`, `read_files`, `view_file_range`, `file_outline`, `get_function`      |
-| **Searching**  | `search_code`, `search_codebase` (RAG), `search_and_read`                         |
+| **Searching**  | `search_code`, `search_codebase` (two-step RAG), `search_and_read`                |
 | **Editing**    | `write_file`, `str_replace`, `insert_at_line`, `delete_lines`, `create_directory` |
 | **Batch**      | `edit_and_verify`, `edit_files`, `search_and_replace_all`                         |
-| **Execution**  | `run_code`, `run_tests`, `run_command` (whitelisted)                              |
+| **Execution**  | `run_code`, `run_tests`, `run_command` (whitelisted), `generate_test`             |
 | **Git**        | `git_status`, `git_diff`, `git_commit`, `git_log`, `git_checkout_file`            |
 | **Agent**      | `write_scratchpad`, `read_scratchpad`, `request_transition`, `report_confidence`  |
 
 ## Key Features
 
 - **FileSystem foundation** — all file operations go through `git ls-files`, respecting `.gitignore` automatically
-- **RAG via ChromaDB** — AST-based chunking, semantic search with sentence-transformers, auto-indexes codebases with 3+ Python files
+- **Two-step RAG via ChromaDB** — first finds relevant files, then retrieves specific chunks within those files. AST-based chunking, auto-indexes codebases with 3+ Python files
 - **Scratchpad memory** — agent saves notes that survive context trimming, preventing amnesia on long tasks
 - **Structured test results** — `[TEST_RESULT:PASS] passed=X failed=Y errors=Z` instead of brittle string matching
 - **Trajectory logging** — every agent run saved as structured JSON for analysis
@@ -109,6 +109,8 @@ python main.py --swebench --limit 1 --no-eval # generate patches
 - **Reflexion** — stores failure reflections, retrieves them for similar future tasks
 - **Timeout escalation** — retries with doubled timeout on slow test suites
 - **Parallel reads** — multiple read tools per turn, one write per turn
+- **Multi-model routing** — uses lighter model for exploration, full model for implementation
+- **Automated test generation** — agent can write reproduction scripts to verify bugs exist before fixing
 
 ## Project Structure
 

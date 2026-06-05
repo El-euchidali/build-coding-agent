@@ -577,6 +577,14 @@ TOOL_SCHEMAS = [
             "reason": {"type": "string", "description": "Why this score"},
         }, "required": ["score", "reason"]},
     }},
+    {"type": "function", "function": {
+        "name": "generate_test",
+        "description": "Write a minimal reproduction script that demonstrates the bug. Run it before and after your fix to prove the bug exists and the fix works.",
+        "parameters": {"type": "object", "properties": {
+            "filepath": {"type": "string", "description": "Path for the test script (e.g. 'reproduce_bug.py')"},
+            "content": {"type": "string", "description": "Python script that reproduces the bug"},
+        }, "required": ["filepath", "content"]},
+    }},
 ]
 
 
@@ -938,6 +946,15 @@ def report_confidence(workspace: Path, score: int, reason: str) -> str:
         return f"Confidence {score}/10: MEDIUM. Proceed with caution. Reason: {reason}"
     else:
         return f"Confidence {score}/10: HIGH. Proceed to verify. Reason: {reason}"
+    
+
+def generate_test(workspace: Path, filepath: str, content: str) -> str:
+    """Write a reproduction script and run it to verify the bug exists."""
+    fs = FileSystem(workspace)
+    fs.write(filepath, content)
+    # Run it to see if it reproduces the bug
+    result = run_python_file(workspace, filepath)
+    return f"Wrote {filepath}.\n\nExecution output:\n{result}"    
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
@@ -968,6 +985,8 @@ _TOOLS_MAP = {
     "write_scratchpad":    write_scratchpad,
     "read_scratchpad":     read_scratchpad,
     "request_transition":  request_transition,
+    "generate_test":       generate_test,
+
 
     # Execution
     "run_code":               run_code,
@@ -980,6 +999,7 @@ _TOOLS_MAP = {
     "git_log":                git_log,
     "git_checkout_file":      git_checkout_file,
     "report_confidence":   report_confidence,
+
 }
 
 
