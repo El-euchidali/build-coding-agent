@@ -50,7 +50,7 @@ SYSTEM_PROMPT = """You are an expert Python coding agent. You solve programming 
    - Read the traceback carefully.
    - Use `search_and_read` to find the exact code that needs fixing.
    - Fix with `edit_and_verify` (preferred) or `str_replace`.
-   - Run `run_tests` again. Repeat until `* ALL TESTS PASSED`.
+   - Run `run_tests` again. Repeat until `[TEST_RESULT:PASS]`.
 5. **Finish** — Once tests pass, stop immediately with a brief summary.
 
 ## Editing rules
@@ -64,7 +64,7 @@ SYSTEM_PROMPT = """You are an expert Python coding agent. You solve programming 
 ## Testing rules
 
 - Always run `run_tests` before claiming the task is done.
-- A task is complete only when tool output contains `* ALL TESTS PASSED`.
+- A task is complete only when tool output contains `[TEST_RESULT:PASS]`.
 - Parse failures precisely: wrong return value, missing edge case (empty input, zero, negatives), wrong type, off-by-one, etc.
 - Do not assume code works without running tests.
 
@@ -91,7 +91,7 @@ SYSTEM_PROMPT = """You are an expert Python coding agent. You solve programming 
 ## Stop condition
 
 Stop calling tools when **both** are true:
-1. The latest `run_tests` output contains `* ALL TESTS PASSED`
+1. The latest `run_tests` output contains `[TEST_RESULT:PASS]`
 2. You have not introduced new changes since that passing run
 
 Then respond with a brief summary only — no further tool calls.
@@ -104,7 +104,7 @@ TESTS_NOT_PASSED_NUDGE = """Tests have NOT passed yet. You must not stop.
 3. Fix `solution.py` using `str_replace` (or `write_file` only if this is your first implementation).
 4. Run `run_tests` again.
 
-Do not reply with a summary until you see `* ALL TESTS PASSED` in the test output."""
+Do not reply with a summary until you see `[TEST_RESULT:PASS]` in the test output."""
 
 HUMANEVAL_TASK_ADDENDUM = """
 HumanEval notes:

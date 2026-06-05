@@ -764,6 +764,22 @@
           return;
         }
 
+        if (data.type === "permission") {
+          if (thinking) thinking.remove();
+          const card = document.createElement("div");
+          card.className = "tool-card";
+          card.innerHTML = `
+            <div class="tool-header" style="background:var(--accent-light);border-color:var(--accent);">
+              <div class="tool-icon" style="background:var(--accent);">⚠</div>
+              <span class="tool-name">${data.tool}</span>
+              <span class="tool-args">${fmtArgs(data.args)}</span>
+            </div>
+          `;
+          chat.appendChild(card);
+          scrollBottom();
+          return;
+        }
+
         if (data.type === "response") {
           if (typing) typing.remove();
           addBubble("assistant", data.content);

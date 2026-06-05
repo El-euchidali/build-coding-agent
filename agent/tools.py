@@ -10,11 +10,12 @@ from agent.filesystem import FileSystem
 
 
 # ── Safety blocklist for run_command ─────────────────────────────────────────
-_BLOCKED_COMMANDS = [
-    "rm -rf", "rmdir /s", "format", "mkfs", "dd ",
-    "shutdown", "reboot", "halt", "poweroff",
-    "curl", "wget", "nc ", "ncat", "netcat",
-    ":(){:|:&};:", "fork bomb",
+_ALLOWED_COMMAND_PREFIXES = [
+    "python", "pip", "pytest", "git",
+    "ls", "dir", "cat", "head", "tail", "grep", "find", "wc",
+    "echo", "pwd", "cd", "mkdir", "touch", "cp", "mv",
+    "npm", "node", "make", "cargo", "go ",
+    "which", "where", "env", "printenv", "type",
 ]
 
 TOOL_SCHEMAS = [
@@ -826,17 +827,18 @@ def run_tests(workspace: Path, test_path: str = "test_solution.py") -> str:
 
 
 def run_command(workspace: Path, command: str) -> str:
-    for blocked in _BLOCKED_COMMANDS:
-        if blocked.lower() in command.lower():
-            return f"Error: command blocked for safety: '{blocked}'"
+    cmd_lower = command.strip().lower()
+    allowed = any(cmd_lower.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES)
+    if not allowed:
+        return (
+            f"Error: command not in allowlist. Allowed prefixes: "
+            f"{', '.join(_ALLOWED_COMMAND_PREFIXES[:10])}... "
+            f"Use a specific tool instead (run_code, run_tests, git_status, etc)."
+        )
     try:
         result = subprocess.run(
-            command,
-            shell=True,
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=60,
+            command, shell=True, cwd=workspace,
+            capture_output=True, text=True, timeout=60,
         )
         output = result.stdout + result.stderr
         if result.returncode != 0:

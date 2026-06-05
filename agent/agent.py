@@ -10,6 +10,13 @@ from agent.failure import classify_failure, tests_passed_in_history
 from agent.rag import CodebaseIndex, set_current_index
 from agent.filesystem import FileSystem
 from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
+from agent.trajectory import Trajectory
+
+_DANGEROUS_TOOLS = frozenset({
+    "write_file", "str_replace", "delete_lines", "insert_at_line",
+    "edit_files", "edit_and_verify", "search_and_replace_all",
+    "git_commit", "run_command", "create_directory",
+})
 
 MAX_NUDGES_WITHOUT_TESTS = 3
 
@@ -166,7 +173,7 @@ def handle_message(
     user_message: str,
     messages: list[dict],
     workspace: Path,
-    max_tool_rounds: int = 15,
+    max_tool_rounds: int = 30,
 ) -> tuple[MessageResponse, list[dict]]:
     """
     Handle a single user message in conversational mode.
@@ -244,7 +251,7 @@ def handle_message_streaming(
     user_message: str,
     messages: list[dict],
     workspace: Path,
-    max_tool_rounds: int = 15,
+    max_tool_rounds: int = 30,
 ):
     """
     Streaming version of handle_message.
@@ -277,12 +284,19 @@ def handle_message_streaming(
             }
             return
 
-        # Execute first tool call
+        # Execute first tool call — permission check for dangerous tools
         tc = tool_calls[0]
         try:
-            args = json.loads(tc["arguments"])
+            args_preview = json.loads(tc["arguments"])
         except json.JSONDecodeError:
-            args = {}
+            args_preview = {}
+        if tc["name"] in _DANGEROUS_TOOLS:
+            yield {
+                "type": "permission",
+                "tool": tc["name"],
+                "args": args_preview,
+                "message": f"I want to use {tc['name']}. Allow?",
+            }
 
         tool_start = time.time()
         result = execute_tool(tc["name"], args, workspace)
@@ -362,6 +376,8 @@ def run_task(
     last_result: str = ""
     has_written = False
     blocked_count = 0
+    trajectory = Trajectory(task_id=description[:50].replace(" ", "_"))
+
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
@@ -421,9 +437,13 @@ def run_task(
 
         if not tool_calls:
             if tests_passed_in_history(messages):
+                trajectory.log_result(success=True, tokens=get_token_usage())
+                trajectory.save()
                 return _finalize_result(True, last_output, iteration, messages)
             nudge_count += 1
             if nudge_count > MAX_NUDGES_WITHOUT_TESTS:
+                trajectory.log_result(success=False, error="stopped_early", tokens=get_token_usage())
+                trajectory.save()
                 return _finalize_result(
                     False,
                     last_output,
@@ -453,6 +473,10 @@ def run_task(
 
         last_tool = tc["name"]
         last_result = execute_tool(last_tool, args, workspace) + extra_note
+        trajectory.log_step(
+            iteration=iteration, state=state.value, tool=last_tool,
+            args=args, result=last_result, tokens=get_token_usage(),
+        )
         blocked_count = 0
 
         if last_tool == "write_file":
@@ -468,8 +492,12 @@ def run_task(
         state = transition(state, last_tool, last_result, iteration)
 
         if state == AgentState.DONE:
+            trajectory.log_result(success=True, tokens=get_token_usage())
+            trajectory.save()
             return _finalize_result(True, last_output, iteration, messages)
 
+    trajectory.log_result(success=False, error="max_iterations", tokens=get_token_usage())
+    trajectory.save()
     return _finalize_result(
         False,
         last_output,

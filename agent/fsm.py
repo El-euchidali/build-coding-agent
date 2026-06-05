@@ -152,7 +152,7 @@ def transition(
 
     # Tests ran — decide based on result
     if last_tool == "run_tests":
-        if "* ALL TESTS PASSED" in last_result:
+        if "[TEST_RESULT:PASS]" in last_result:
             return AgentState.DONE
         else:
             return AgentState.FIX
