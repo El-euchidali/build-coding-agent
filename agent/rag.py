@@ -94,7 +94,7 @@ class CodebaseIndex:
     """
 
     def __init__(self, workspace: Path):
-        self.workspace = workspace
+        self.workspace = workspace.resolve()
         # In-memory ChromaDB client — fresh per task, no persistence needed
         self.client = chromadb.Client()
         # Unique collection name per workspace to avoid collisions

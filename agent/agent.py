@@ -12,6 +12,8 @@ from agent.filesystem import FileSystem
 from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
 from agent.trajectory import Trajectory
 from agent.tools import reset_scratchpad, get_scratchpad
+from agent.reflexion import save_reflection, get_past_reflections
+
 
 _DANGEROUS_TOOLS = frozenset({
     "write_file", "str_replace", "delete_lines", "insert_at_line",
@@ -382,6 +384,11 @@ def run_task(
             "content": f"Task:\n{description}\n\nWorkspace: {workspace.resolve()}",
         },
     ]
+    
+    # Inject past reflections if available
+    past = get_past_reflections(description)
+    if past:
+        messages.insert(2, {"role": "system", "content": past})
 
     last_output = ""
     nudge_count = 0
@@ -468,6 +475,12 @@ def run_task(
             if nudge_count > MAX_NUDGES_WITHOUT_TESTS:
                 trajectory.log_result(success=False, error="stopped_early", tokens=get_token_usage())
                 trajectory.save()
+                save_reflection(
+                    task_description=description,
+                    error="stopped_early",
+                    reflection=f"Agent stopped without passing tests after {iteration} iterations. "
+                               f"Consider: verify test output parsing, check if tests can run."
+                )
                 return _finalize_result(
                     False,
                     last_output,
@@ -478,29 +491,61 @@ def run_task(
             messages.append({"role": "user", "content": TESTS_NOT_PASSED_NUDGE})
             continue
 
-        # One tool per turn
+        
+        # Parallel reads allowed, one write per turn
+        _READ_TOOLS = frozenset({
+            "list_files", "view_directory", "find_files", "read_file", "read_files",
+            "view_file_range", "search_code", "search_codebase", "search_and_read",
+            "explore_repo", "file_outline", "get_function", "git_status", "git_diff",
+            "git_log", "read_scratchpad",
+        })
         if len(tool_calls) > 1:
-            skipped = [tc["name"] for tc in tool_calls[1:]]
-            tool_calls = tool_calls[:1]
-            extra_note = (
-                f"\nNote: Only one tool per turn. Skipped: {', '.join(skipped)}. "
-                "Call again for the next action."
-            )
+            # Allow multiple reads, but only one write
+            reads = [tc for tc in tool_calls if tc["name"] in _READ_TOOLS]
+            writes = [tc for tc in tool_calls if tc["name"] not in _READ_TOOLS]
+            if writes:
+                tool_calls = reads + writes[:1]
+                skipped = writes[1:]
+            else:
+                tool_calls = reads
+                skipped = []
+            if skipped:
+                extra_note = (
+                    f"\nNote: Skipped write tools (one per turn): "
+                    f"{', '.join(tc['name'] for tc in skipped)}."
+                )
+            else:
+                extra_note = ""
         else:
             extra_note = ""
 
-        tc = tool_calls[0]
-        try:
-            args = json.loads(tc["arguments"])
-        except json.JSONDecodeError:
-            args = {}
+        # Execute all tool calls this turn (parallel reads, one write)
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc["arguments"])
+            except json.JSONDecodeError:
+                args = {}
 
-        last_tool = tc["name"]
-        last_result = execute_tool(last_tool, args, workspace) + extra_note
-        trajectory.log_step(
-            iteration=iteration, state=state.value, tool=last_tool,
-            args=args, result=last_result, tokens=get_token_usage(),
-        )
+            last_tool = tc["name"]
+            last_result = execute_tool(last_tool, args, workspace)
+            blocked_count = 0
+
+            if last_tool == "write_file":
+                has_written = True
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": last_result,
+            })
+
+            trajectory.log_step(
+                iteration=iteration, state=state.value, tool=last_tool,
+                args=args, result=last_result, tokens=get_token_usage(),
+            )
+
+        last_result = last_result + extra_note
+
         # Token budget check
         current_tokens = get_token_usage()
         if current_tokens and current_tokens.get("total", 0) > token_budget:
@@ -516,17 +561,7 @@ def run_task(
                 "content": "WARNING: You have used 80% of your token budget. "
                            "Finish your current approach quickly — do not start new explorations."
             })
-        blocked_count = 0
-
-        if last_tool == "write_file":
-            has_written = True
-
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "content": last_result,
-        })
-
+            
         # FSM: transition to next state
         state = transition(state, last_tool, last_result, iteration)
 
@@ -537,6 +572,13 @@ def run_task(
 
     trajectory.log_result(success=False, error="max_iterations", tokens=get_token_usage())
     trajectory.save()
+    save_reflection(
+        task_description=description,
+        error="max_iterations",
+        reflection=f"Failed after {max_iterations} iterations. Last state: {state.value}. "
+                   f"Last tool: {last_tool}. Tokens used: {get_token_usage().get('total', 0):,}. "
+                   f"Consider: different approach, fewer file reads, more targeted searches."
+    )
     return _finalize_result(
         False,
         last_output,

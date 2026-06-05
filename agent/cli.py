@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent.agent import init_conversation, handle_message
 from agent.llm import get_token_usage
+from agent.filesystem import FileSystem
 
 
 def colorize(text: str, color: str) -> str:
@@ -63,11 +64,8 @@ def main():
     messages = init_conversation(workspace)
 
     # Count files
-    try:
-        py_count = sum(1 for f in workspace.rglob("*.py")
-                       if ".git" not in f.parts and "venv" not in f.parts)
-    except OSError:
-        py_count = 0
+    fs = FileSystem(workspace)
+    py_count = len(fs.tracked_files("*.py"))
     print(colorize(f"  {py_count} Python files indexed", "gray"))
     print(colorize(f"  Type 'exit' to quit, 'clear' for new chat\n", "gray"))
 
