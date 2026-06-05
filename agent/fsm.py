@@ -22,6 +22,8 @@ STATE_TOOLS = {
         "find_files",
         "file_outline",
         "git_log",
+        "write_scratchpad",
+        "read_scratchpad",
     ],
     AgentState.EXPLORE: [
         "list_files",
@@ -40,6 +42,9 @@ STATE_TOOLS = {
         "run_command",
         "git_log",
         "git_status",
+        "write_scratchpad",
+        "read_scratchpad",
+        "request_transition",
     ],
     AgentState.IMPLEMENT: [
         "write_file",
@@ -53,6 +58,8 @@ STATE_TOOLS = {
         "run_code",
         "run_tests",
         "run_command",
+        "write_scratchpad",
+        "read_scratchpad",
     ],
     AgentState.VERIFY: [
         "run_tests",
@@ -60,6 +67,8 @@ STATE_TOOLS = {
         "run_command",
         "git_diff",
         "git_status",
+        "write_scratchpad",
+        "read_scratchpad",
     ],
     AgentState.FIX: [
         "str_replace",
@@ -82,6 +91,9 @@ STATE_TOOLS = {
         "run_command",
         "git_diff",
         "git_checkout_file",
+        "write_scratchpad",
+        "read_scratchpad",
+        "request_transition",
     ],
     AgentState.DONE: [
         "git_commit",
@@ -150,6 +162,22 @@ def transition(
 ) -> AgentState:
     """Decide next state based on what just happened."""
 
+    # LLM-requested state transition
+    if last_tool == "request_transition" and "[STATE_TRANSITION:" in last_result:
+        import re
+        match = re.search(r'\[STATE_TRANSITION:(\w+)\]', last_result)
+        if match:
+            target = match.group(1).lower()
+            state_map = {
+                "plan": AgentState.PLAN,
+                "explore": AgentState.EXPLORE,
+                "implement": AgentState.IMPLEMENT,
+                "verify": AgentState.VERIFY,
+                "fix": AgentState.FIX,
+            }
+            if target in state_map:
+                return state_map[target]
+            
     # Tests ran — decide based on result
     if last_tool == "run_tests":
         if "[TEST_RESULT:PASS]" in last_result:
@@ -176,8 +204,8 @@ def transition(
         ):
             return AgentState.EXPLORE
 
-    # EXPLORE → IMPLEMENT after reading enough
-    if current == AgentState.EXPLORE and iteration >= 2:
+    # EXPLORE → IMPLEMENT after reading enough (minimum 3 iterations)
+    if current == AgentState.EXPLORE and iteration >= 3:
         if last_tool in (
             "read_file", "read_files", "view_file_range",
             "search_code", "search_codebase", "search_and_read",

@@ -11,6 +11,7 @@ from agent.rag import CodebaseIndex, set_current_index
 from agent.filesystem import FileSystem
 from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
 from agent.trajectory import Trajectory
+from agent.tools import reset_scratchpad, get_scratchpad
 
 _DANGEROUS_TOOLS = frozenset({
     "write_file", "str_replace", "delete_lines", "insert_at_line",
@@ -153,6 +154,7 @@ def _detect_loop(messages: list[dict], window: int = 3) -> bool:
 
 def init_conversation(workspace: Path) -> list[dict]:
     """Initialize a new conversation with system prompt and RAG index."""
+    reset_scratchpad()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # Build RAG index if codebase is large enough
@@ -263,6 +265,16 @@ def handle_message_streaming(
     # Add user message
     messages.append({"role": "user", "content": user_message})
     messages = trim_context(messages)
+    # Inject scratchpad so it survives context trimming
+    scratchpad = get_scratchpad()
+    if scratchpad:
+        pad_content = "## Your Scratchpad Notes\n"
+        for key, value in scratchpad.items():
+            pad_content += f"### {key}\n{value}\n\n"
+        # Remove old scratchpad injection if present
+        messages = [m for m in messages if not m.get("content", "").startswith("## Your Scratchpad Notes")]
+        # Insert after system prompt and task
+        messages.insert(2, {"role": "system", "content": pad_content})
 
     for round_num in range(max_tool_rounds):
         start_time = time.time()
@@ -345,6 +357,7 @@ def run_task(
     description: str,
     workspace: Path,
     max_iterations: int = 12,
+    token_budget: int = 200000,
 ) -> TaskResult:
     """Run the agent loop with FSM control. Used for benchmarks."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -361,6 +374,7 @@ def run_task(
         set_current_index(None)
 
     reset_token_counter()
+    reset_scratchpad()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -381,6 +395,16 @@ def run_task(
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
+        # Inject scratchpad so it survives context trimming
+        scratchpad = get_scratchpad()
+        if scratchpad:
+            pad_content = "## Your Scratchpad Notes\n"
+            for key, value in scratchpad.items():
+                pad_content += f"### {key}\n{value}\n\n"
+            # Remove old scratchpad injection if present
+            messages = [m for m in messages if not m.get("content", "").startswith("## Your Scratchpad Notes")]
+            # Insert after system prompt and task
+            messages.insert(2, {"role": "system", "content": pad_content})
 
         # Loop detection
         if _detect_loop(messages):
@@ -477,6 +501,21 @@ def run_task(
             iteration=iteration, state=state.value, tool=last_tool,
             args=args, result=last_result, tokens=get_token_usage(),
         )
+        # Token budget check
+        current_tokens = get_token_usage()
+        if current_tokens and current_tokens.get("total", 0) > token_budget:
+            trajectory.log_result(success=False, error="token_budget_exceeded", tokens=current_tokens)
+            trajectory.save()
+            return _finalize_result(
+                False, last_output, iteration, messages,
+                error=f"token_budget_exceeded ({current_tokens['total']:,} > {token_budget:,})"
+            )
+        elif current_tokens and current_tokens.get("total", 0) > token_budget * 0.8:
+            messages.append({
+                "role": "user",
+                "content": "WARNING: You have used 80% of your token budget. "
+                           "Finish your current approach quickly — do not start new explorations."
+            })
         blocked_count = 0
 
         if last_tool == "write_file":

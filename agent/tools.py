@@ -8,6 +8,20 @@ from execution.sandbox import run_python_file, run_pytest
 from agent.rag import search_codebase
 from agent.filesystem import FileSystem
 
+# Global scratchpad — survives context trimming
+_scratchpad: dict[str, str] = {}
+
+
+def reset_scratchpad():
+    """Clear scratchpad between tasks."""
+    global _scratchpad
+    _scratchpad = {}
+
+
+def get_scratchpad() -> dict[str, str]:
+    """Get current scratchpad contents."""
+    return _scratchpad
+
 
 # ── Safety blocklist for run_command ─────────────────────────────────────────
 _ALLOWED_COMMAND_PREFIXES = [
@@ -298,6 +312,19 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {"type": "function", "function": {
+        "name": "write_scratchpad",
+        "description": "Save a note to your scratchpad. Notes survive context trimming — use this to remember important findings, plans, or decisions across a long session. Each key overwrites the previous value for that key.",
+        "parameters": {"type": "object", "properties": {
+            "key": {"type": "string", "description": "Short label e.g. 'plan', 'bug_location', 'findings'"},
+            "content": {"type": "string", "description": "The note to save"},
+        }, "required": ["key", "content"]},
+    }},
+    {"type": "function", "function": {
+        "name": "read_scratchpad",
+        "description": "Read all your saved notes. Use at the start of a complex task to recall what you already know.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
     # ── File Editing ──────────────────────────────────────────────────────────
     {
         "type": "function",
@@ -534,6 +561,14 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {"type": "function", "function": {
+        "name": "request_transition",
+        "description": "Request a state transition in the FSM. Use when you need more exploration before implementing, or when your approach failed and you want to go back to planning. Valid targets: plan, explore, implement, verify, fix.",
+        "parameters": {"type": "object", "properties": {
+            "target_state": {"type": "string", "description": "State to transition to: plan, explore, implement, verify, fix"},
+            "reason": {"type": "string", "description": "Why you need this transition"},
+        }, "required": ["target_state", "reason"]},
+    }},
 ]
 
 
@@ -760,6 +795,19 @@ def explore_repo(workspace: Path) -> str:
     fs = FileSystem(workspace)
     return fs.summary()
 
+def write_scratchpad(workspace: Path, key: str, content: str) -> str:
+    _scratchpad[key] = content
+    return f"Saved to scratchpad: '{key}' ({len(content)} chars). You have {len(_scratchpad)} note(s)."
+
+
+def read_scratchpad(workspace: Path) -> str:
+    if not _scratchpad:
+        return "Scratchpad is empty. Use write_scratchpad to save notes."
+    output = []
+    for key, value in _scratchpad.items():
+        output.append(f"### {key}\n{value}")
+    return "\n\n".join(output)
+
 # ── File Editing ──────────────────────────────────────────────────────────────
 
 def write_file(workspace: Path, filepath: str, content: str) -> str:
@@ -781,7 +829,7 @@ def str_replace(workspace: Path, filepath: str, old_str: str, new_str: str) -> s
         return f"Error: old_str appears {count} times in {filepath} — be more specific"
     new_content = content.replace(old_str, new_str, 1)
     target.write_text(new_content, encoding="utf-8")
-    return f"Successfully replaced in {filepath}"
+    return f"Successfully replaced in {filepath}. Use git_diff to see full changes — do not re-read the entire file."
 
 
 def insert_at_line(workspace: Path, filepath: str, line_number: int, content: str) -> str:
@@ -847,6 +895,11 @@ def run_command(workspace: Path, command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: command timed out after 60s"
 
+def request_transition(workspace: Path, target_state: str, reason: str) -> str:
+    valid = {"plan", "explore", "implement", "verify", "fix"}
+    if target_state not in valid:
+        return f"Error: invalid state '{target_state}'. Valid: {', '.join(valid)}"
+    return f"[STATE_TRANSITION:{target_state.upper()}] Reason: {reason}"
 
 # ── Git Operations ────────────────────────────────────────────────────────────
 
@@ -895,6 +948,10 @@ _TOOLS_MAP = {
     "insert_at_line":         insert_at_line,
     "delete_lines":           delete_lines,
     "create_directory":       create_directory,
+    "write_scratchpad":    write_scratchpad,
+    "read_scratchpad":     read_scratchpad,
+    "request_transition":  request_transition,
+
     # Execution
     "run_code":               run_code,
     "run_tests":              run_tests,
