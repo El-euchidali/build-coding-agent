@@ -720,6 +720,14 @@
           })
           .catch((err) => {
             console.error(err);
+            const typing = document.getElementById("typing");
+            if (typing) typing.remove();
+            const errMsg = document.createElement("div");
+            errMsg.className = "message assistant";
+            errMsg.innerHTML = `<div class="msg-bubble" style="border-color:var(--red);background:var(--red-light);color:var(--red);">
+              Connection error: ${escapeHtml(err.message || "Request failed")}. Try sending your message again.
+            </div>`;
+            document.getElementById("chat").appendChild(errMsg);
             finishSend();
           });
       }
@@ -727,6 +735,18 @@
       function handleEvent(data) {
         const chat = document.getElementById("chat");
         const typing = document.getElementById("typing");
+
+        if (data.type === "error") {
+          if (thinking) thinking.remove();
+          const errMsg = document.createElement("div");
+          errMsg.className = "message assistant";
+          errMsg.innerHTML = `<div class="msg-bubble" style="border-color:var(--red);background:var(--red-light);color:var(--red);">
+            ${escapeHtml(data.message || "An error occurred")}
+          </div>`;
+          chat.appendChild(errMsg);
+          finishSend();
+          return;
+        }
 
         if (data.type === "rag") {
           const el = document.createElement("div");
@@ -961,6 +981,13 @@
       }
 
       window.addEventListener("DOMContentLoaded", loadWorkspace);
+      window.addEventListener("DOMContentLoaded", () => {
+        loadWorkspace();
+        // Auto-refresh file tree every 10 seconds while running
+        setInterval(() => {
+          if (sending) loadWorkspace();
+        }, 10000);
+      });
     </script>
   </body>
 </html>

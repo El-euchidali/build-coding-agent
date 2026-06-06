@@ -2,8 +2,7 @@
 Terminal chat interface for the coding agent.
 Usage: python -m agent.cli [workspace_path]
 
-Opens a conversational agent in your terminal.
-If no workspace given, uses the current directory.
+Conversational agent in your terminal — like Claude Code.
 """
 
 import json
@@ -11,43 +10,118 @@ import sys
 import time
 from pathlib import Path
 
-from agent.agent import init_conversation, handle_message
-from agent.llm import get_token_usage
+from agent.agent import init_conversation, handle_message_streaming
 from agent.filesystem import FileSystem
 
 
-def colorize(text: str, color: str) -> str:
-    """Add ANSI color codes."""
-    colors = {
-        "gray": "\033[90m",
-        "green": "\033[32m",
-        "yellow": "\033[33m",
-        "blue": "\033[34m",
-        "magenta": "\033[35m",
-        "cyan": "\033[36m",
-        "red": "\033[31m",
-        "bold": "\033[1m",
-        "reset": "\033[0m",
-    }
-    return f"{colors.get(color, '')}{text}{colors['reset']}"
+# ── ANSI helpers ──────────────────────────────────────────────────────────────
+
+def _c(text, code):
+    return f"\033[{code}m{text}\033[0m"
+
+def gray(t): return _c(t, "90")
+def green(t): return _c(t, "32")
+def magenta(t): return _c(t, "35")
+def cyan(t): return _c(t, "36")
+def red(t): return _c(t, "31")
+def yellow(t): return _c(t, "33")
+def bold(t): return _c(t, "1")
+def dim(t): return _c(t, "2")
 
 
-def print_tool_call(tc):
-    """Pretty-print a tool call."""
-    args_str = ", ".join(f"{k}={repr(v)[:40]}" for k, v in tc.args.items())
-    print(colorize(f"  ⚡ {tc.name}({args_str})", "cyan"), end="")
-    print(colorize(f"  {tc.elapsed}s", "gray"))
+# ── Display helpers ───────────────────────────────────────────────────────────
 
-    # Show truncated result
-    result_preview = tc.result[:200].replace("\n", "\n    ")
-    print(colorize(f"    {result_preview}", "gray"))
-    if len(tc.result) > 200:
-        print(colorize(f"    ... ({len(tc.result)} chars total)", "gray"))
+def print_tool_call(event):
+    """Pretty-print a tool call with result."""
+    tool = event.get("tool", "")
+    args = event.get("args", {})
+    elapsed = event.get("tool_elapsed", 0)
+
+    args_parts = []
+    for k, v in args.items():
+        v_str = str(v)
+        if len(v_str) > 40:
+            v_str = v_str[:40] + "..."
+        args_parts.append(v_str)
+    args_str = ", ".join(args_parts)
+
+    print(f"  {cyan('>')} {bold(tool)}({gray(args_str)})  {dim(str(elapsed) + 's')}")
+
+    result = event.get("result", "")
+    if result:
+        lines = result.split("\n")
+        for line in lines[:5]:
+            print(f"    {dim(line[:120])}")
+        if len(lines) > 5:
+            print(f"    {dim('... (' + str(len(lines)) + ' lines)')}")
     print()
 
 
+def stream_text(content):
+    """Print response with word-by-word streaming effect."""
+    words = content.split(" ")
+    for i, word in enumerate(words):
+        if i > 0:
+            sys.stdout.write(" ")
+        sys.stdout.write(word)
+        sys.stdout.flush()
+        if "\n" in word:
+            time.sleep(0.02)
+        else:
+            time.sleep(0.015)
+    print()
+
+
+# ── History persistence ───────────────────────────────────────────────────────
+
+def save_history(messages, workspace):
+    """Save conversation history to disk."""
+    history_dir = workspace / ".agent_history"
+    history_dir.mkdir(exist_ok=True)
+    path = history_dir / "last_conversation.json"
+    saveable = [
+        {"role": m["role"], "content": m.get("content", "")[:500]}
+        for m in messages
+        if m.get("role") in ("user", "assistant")
+    ]
+    try:
+        path.write_text(json.dumps(saveable, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def archive_history(messages, workspace):
+    """Archive current conversation with timestamp."""
+    history_dir = workspace / ".agent_history"
+    history_dir.mkdir(exist_ok=True)
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = history_dir / f"conversation_{timestamp}.json"
+    saveable = [
+        {"role": m["role"], "content": m.get("content", "")[:500]}
+        for m in messages
+        if m.get("role") in ("user", "assistant")
+    ]
+    if saveable:
+        try:
+            path.write_text(json.dumps(saveable, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+def load_history(workspace):
+    """Load previous conversation if it exists."""
+    path = workspace / ".agent_history" / "last_conversation.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
-    # Determine workspace
     if len(sys.argv) > 1:
         workspace = Path(sys.argv[1]).resolve()
     else:
@@ -57,79 +131,102 @@ def main():
         print(f"Error: {workspace} does not exist")
         sys.exit(1)
 
-    # Initialize conversation
-    print(colorize(f"\n  λ Coding Agent", "bold"))
-    print(colorize(f"  Working in: {workspace}", "gray"))
+    # Header
+    print()
+    print(f"  {bold('Coding Agent')}")
+    print(f"  {gray(str(workspace))}")
 
-    messages = init_conversation(workspace)
-
-    # Count files
     fs = FileSystem(workspace)
     py_count = len(fs.tracked_files("*.py"))
-    print(colorize(f"  {py_count} Python files indexed", "gray"))
-    print(colorize(f"  Type 'exit' to quit, 'clear' for new chat\n", "gray"))
+    print(f"  {gray(str(py_count) + ' Python files indexed')}")
 
+
+    print(f"  {gray('Commands: exit, clear')}")
+    print()
+
+    messages = init_conversation(workspace)
+    # Auto-resume last conversation
+    prev = load_history(workspace)
+    if prev:
+        for msg in prev:
+            messages.append(msg)
+        msg_count = len([m for m in prev if m["role"] == "user"])
+        print(f"  {gray('Resumed previous conversation (' + str(msg_count) + ' messages)')}")
+        print()
+        
     total_tokens = 0
 
     while True:
-        # User input
         try:
-            user_input = input(colorize("You: ", "green"))
+            user_input = input(f"  {green('You:')} ")
         except (KeyboardInterrupt, EOFError):
-            print("\n")
+            print()
+            save_history(messages, workspace)
             break
 
         user_input = user_input.strip()
-
         if not user_input:
             continue
 
         if user_input.lower() in ("exit", "quit", "q"):
+            save_history(messages, workspace)
             break
 
         if user_input.lower() in ("clear", "reset", "new"):
             messages = init_conversation(workspace)
             total_tokens = 0
-            print(colorize("\n  Chat cleared.\n", "gray"))
+            print(f"\n  {gray('Chat cleared.')}\n")
             continue
 
-        # Get response
+        
+
         print()
         start = time.time()
+        tool_count = 0
 
         try:
-            response, messages = handle_message(
+            for event in handle_message_streaming(
                 user_message=user_input,
                 messages=messages,
                 workspace=workspace,
-                max_tool_rounds=15,
-            )
+                max_tool_rounds=30,
+            ):
+                if event["type"] == "tool_call":
+                    print_tool_call(event)
+                    tool_count += 1
+
+                elif event["type"] == "thinking":
+                    content = event.get("content", "")
+                    if content:
+                        print(f"  {dim(content[:200])}")
+                        print()
+
+                elif event["type"] == "response":
+                    content = event.get("content", "")
+                    if content:
+                        sys.stdout.write(f"  {magenta('Agent:')} ")
+                        stream_text(content)
+                    total_tokens = event.get("tokens", {}).get("total", total_tokens)
+
+        except KeyboardInterrupt:
+            print(f"\n  {yellow('Interrupted.')}\n")
+            continue
         except Exception as e:
-            print(colorize(f"  Error: {e}\n", "red"))
+            print(f"\n  {red('Error: ' + str(e))}\n")
             continue
 
         elapsed = round(time.time() - start, 1)
-
-        # Show tool calls
-        if response.tool_calls:
-            for tc in response.tool_calls:
-                print_tool_call(tc)
-
-        # Show response
-        if response.content:
-            print(colorize("Agent: ", "magenta") + response.content)
+        tool_label = str(tool_count) + " tool" + ("s" if tool_count != 1 else "")
+        stats_parts = [str(elapsed) + "s"]
+        if tool_count:
+            stats_parts.append(tool_label)
+        stats_parts.append(f"{total_tokens:,} tokens")
+        print(f"  {dim(' . '.join(stats_parts))}")
         print()
 
-        # Show stats
-        if response.tokens:
-            total_tokens = response.tokens.get("total", 0)
-        tools_used = len(response.tool_calls)
-        stats = f"  {elapsed}s"
-        if tools_used:
-            stats += f" · {tools_used} tool{'s' if tools_used > 1 else ''}"
-        stats += f" · {total_tokens:,} tokens total"
-        print(colorize(stats, "gray"))
-        print()
+        save_history(messages, workspace)
+        
+        
 
 
 if __name__ == "__main__":
