@@ -11,3 +11,5 @@ workspace/humaneval/
 .DS_Store
 
 docs/roadmap.md
+
+.agent_history/

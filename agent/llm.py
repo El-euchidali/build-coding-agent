@@ -1,5 +1,5 @@
 import os
-
+import time 
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -47,41 +47,85 @@ def trim_context(
 ) -> list[dict]:
     """
     Trim conversation when over token budget.
-
-    Always keeps system prompt, original task, and the most recent messages.
+    
+    Keeps: system prompt, original task, recent messages.
+    Dropped messages are summarized into a compact note so the agent
+    does not lose critical context.
     """
     if count_tokens(messages) <= max_tokens:
         return messages
-    
-    print(f"  [trim_context] triggered — {count_tokens(messages)} tokens > {max_tokens} limit, trimming...")
-
 
     if len(messages) <= 2 + keep_recent:
         return messages
 
-    trimmed = [messages[0], messages[1]] + messages[-keep_recent:]
+    # Split into: [system, task, ...middle..., ...recent...]
+    head = messages[:2]
+    middle = messages[2:-keep_recent] if len(messages) > 2 + keep_recent else []
+    recent = messages[-keep_recent:]
+
+    # Summarize dropped middle messages into a compact note
+    if middle:
+        tools_used = []
+        files_read = []
+        files_edited = []
+        errors = []
+
+        for msg in middle:
+            content = msg.get("content", "")
+            if msg.get("role") == "tool":
+                # Extract key info from tool results
+                if "Error:" in content:
+                    errors.append(content[:100])
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    name = tc.get("function", {}).get("name", "")
+                    args_str = tc.get("function", {}).get("arguments", "")
+                    tools_used.append(name)
+                    if name in ("read_file", "view_file_range", "file_outline", "get_function"):
+                        try:
+                            import json
+                            a = json.loads(args_str)
+                            files_read.append(a.get("filepath", ""))
+                        except Exception:
+                            pass
+                    elif name in ("write_file", "str_replace", "edit_and_verify"):
+                        try:
+                            import json
+                            a = json.loads(args_str)
+                            files_edited.append(a.get("filepath", ""))
+                        except Exception:
+                            pass
+
+        summary = "[CONTEXT TRIMMED] Earlier in this conversation:\n"
+        if tools_used:
+            summary += f"- Tools used: {', '.join(dict.fromkeys(tools_used))}\n"
+        if files_read:
+            summary += f"- Files read: {', '.join(dict.fromkeys(files_read))}\n"
+        if files_edited:
+            summary += f"- Files edited: {', '.join(dict.fromkeys(files_edited))}\n"
+        if errors:
+            summary += f"- Errors encountered: {len(errors)}\n"
+        summary += f"- {len(middle)} messages trimmed to save context space.\n"
+
+        head.append({"role": "system", "content": summary})
+
+    trimmed = head + recent
+
+    # If still over budget, drop oldest recent messages
     while count_tokens(trimmed) > max_tokens and len(trimmed) > 4:
-        # Drop oldest middle message (never system or task)
-        trimmed = [trimmed[0], trimmed[1]] + trimmed[3:]
+        trimmed = trimmed[:3] + trimmed[4:]
 
-    print(f"  [trim_context] done — reduced to {count_tokens(trimmed)} tokens, kept {len(trimmed)} messages")
-
-    
     return trimmed
 
 
 def chat(messages: list[dict], tools: list | None = None, use_light: bool = False):
     """
-    Send chat completion and return the assistant message object.
-    
-    use_light: if True, use the lighter/cheaper model for simple operations
-               like file reading and searching. Defaults to the main model
-               if no light model is configured.
+    Send chat completion with automatic retry on transient errors.
+    Retries up to 3 times with exponential backoff.
     """
     client = get_client()
     model = os.environ.get("INNKUBE_MODEL", "gemma4-31b-it")
 
-    # Use light model if available and requested
     if use_light:
         light_model = os.environ.get("INNKUBE_MODEL_LIGHT", "")
         if light_model:
@@ -91,14 +135,32 @@ def chat(messages: list[dict], tools: list | None = None, use_light: bool = Fals
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    response = client.chat.completions.create(**kwargs)
 
-    if response.usage:
-        _total_tokens["prompt"] += response.usage.prompt_tokens
-        _total_tokens["completion"] += response.usage.completion_tokens
-        _total_tokens["total"] += response.usage.total_tokens
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(**kwargs)
 
-    return response.choices[0].message
+            if response.usage:
+                _total_tokens["prompt"] += response.usage.prompt_tokens
+                _total_tokens["completion"] += response.usage.completion_tokens
+                _total_tokens["total"] += response.usage.total_tokens
+
+            return response.choices[0].message
+
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            # Retry on transient errors (rate limit, server error, timeout)
+            if any(code in error_str for code in ["429", "500", "502", "503", "timeout", "Connection"]):
+                wait = (attempt + 1) * 5
+                print(f"  [LLM] Retry {attempt + 1}/3 after {wait}s — {type(e).__name__}: {error_str[:100]}")
+                time.sleep(wait)
+                continue
+            # Non-transient error — raise immediately
+            raise
+
+    raise last_error
 
 
 def smoke_test() -> str:

@@ -73,13 +73,16 @@ async def chat_endpoint(request: Request):
     def stream():
         if rag_info:
             yield f"data: {json.dumps({'type': 'rag', 'info': rag_info})}\n\n"
-        for event in handle_message_streaming(
-            user_message=user_message,
-            messages=session["messages"],
-            workspace=workspace_path,
-            max_tool_rounds=15,
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            for event in handle_message_streaming(
+                user_message=user_message,
+                messages=session["messages"],
+                workspace=workspace_path,
+                max_tool_rounds=15,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

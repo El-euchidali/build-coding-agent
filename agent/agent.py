@@ -313,14 +313,14 @@ def handle_message_streaming(
             }
 
         tool_start = time.time()
-        result = execute_tool(tc["name"], args, workspace)
+        result = execute_tool(tc["name"], args_preview, workspace)
         tool_elapsed = round(time.time() - tool_start, 1)
 
         # Yield tool call event
         yield {
             "type": "tool_call",
             "tool": tc["name"],
-            "args": args,
+            "args": args_preview,
             "result": result[:800],
             "elapsed": elapsed,
             "tool_elapsed": tool_elapsed,
