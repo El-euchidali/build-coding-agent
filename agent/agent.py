@@ -15,12 +15,6 @@ from agent.tools import reset_scratchpad, get_scratchpad
 from agent.reflexion import save_reflection, get_past_reflections
 
 
-_DANGEROUS_TOOLS = frozenset({
-    "write_file", "str_replace", "delete_lines", "insert_at_line",
-    "edit_files", "edit_and_verify", "search_and_replace_all",
-    "git_commit", "run_command", "create_directory",
-})
-
 MAX_NUDGES_WITHOUT_TESTS = 3
 
 # System prompt for conversational mode — more flexible than task runner
@@ -298,19 +292,12 @@ def handle_message_streaming(
             }
             return
 
-        # Execute first tool call — permission check for dangerous tools
+        # Execute first tool call
         tc = tool_calls[0]
         try:
             args_preview = json.loads(tc["arguments"])
         except json.JSONDecodeError:
             args_preview = {}
-        if tc["name"] in _DANGEROUS_TOOLS:
-            yield {
-                "type": "permission",
-                "tool": tc["name"],
-                "args": args_preview,
-                "message": f"I want to use {tc['name']}. Allow?",
-            }
 
         tool_start = time.time()
         result = execute_tool(tc["name"], args_preview, workspace)
