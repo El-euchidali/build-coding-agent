@@ -144,6 +144,7 @@ def cmd_swebench(limit: int | None, max_iterations: int, run_eval: bool) -> int:
 
 
 def main() -> int:
+    print("Starting the application...")
     parser = argparse.ArgumentParser(description="Coding Agent MVP")
     parser.add_argument("--smoke", action="store_true", help="Test LLM connection")
     parser.add_argument("--task", type=str, metavar="ID", help="Run single task (e.g. 001)")
