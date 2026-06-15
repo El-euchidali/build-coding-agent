@@ -17,6 +17,15 @@ from agent.reflexion import save_reflection, get_past_reflections
 
 MAX_NUDGES_WITHOUT_TESTS = 3
 
+_READ_TOOLS = frozenset({
+    "list_files", "view_directory", "find_files", "read_file", "read_files",
+    "view_file_range", "search_code", "search_codebase", "search_and_read",
+    "explore_repo", "file_outline", "get_function", "git_status", "git_diff",
+    "git_log", "read_scratchpad",
+})
+
+_SKIP_WRITE_MSG = "Skipped: only one write tool allowed per turn. Call this tool again next turn."
+
 # System prompt for conversational mode — more flexible than task runner
 CONVERSATIONAL_PROMPT = """You are an expert Python coding agent. You help developers understand, navigate, edit, and debug their codebase through conversation.
 
@@ -115,6 +124,67 @@ def _get_tool_calls(message) -> list[dict]:
     return []
 
 
+def _plan_tool_calls(tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Parallel reads allowed; at most one write per turn."""
+    if len(tool_calls) <= 1:
+        return tool_calls, []
+    reads = [tc for tc in tool_calls if tc["name"] in _READ_TOOLS]
+    writes = [tc for tc in tool_calls if tc["name"] not in _READ_TOOLS]
+    if writes:
+        return reads + writes[:1], writes[1:]
+    return reads, []
+
+
+def _parse_tool_args(tc: dict) -> dict:
+    try:
+        return json.loads(tc["arguments"])
+    except json.JSONDecodeError:
+        return {}
+
+
+def _execute_tool_turn(
+    tool_calls: list[dict],
+    workspace: Path,
+) -> tuple[list[dict], list[ToolCall], dict[str, float]]:
+    """
+    Execute tool calls for one turn. Every tool_call id gets a matching tool message.
+    Returns (tool messages in original order, history for executed calls, elapsed by id).
+    """
+    to_execute, skipped = _plan_tool_calls(tool_calls)
+    skipped_ids = {tc["id"] for tc in skipped}
+    results_by_id: dict[str, str] = {}
+    elapsed_by_id: dict[str, float] = {}
+    history: list[ToolCall] = []
+
+    for tc in to_execute:
+        args = _parse_tool_args(tc)
+        tool_start = time.time()
+        result = execute_tool(tc["name"], args, workspace)
+        tool_elapsed = round(time.time() - tool_start, 1)
+        results_by_id[tc["id"]] = result
+        elapsed_by_id[tc["id"]] = tool_elapsed
+        history.append(ToolCall(
+            name=tc["name"],
+            args=args,
+            result=result[:800],
+            elapsed=tool_elapsed,
+        ))
+
+    tool_messages = []
+    for tc in tool_calls:
+        if tc["id"] in skipped_ids:
+            content = _SKIP_WRITE_MSG
+        else:
+            content = results_by_id[tc["id"]]
+        tool_messages.append({
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": content,
+        })
+
+    return tool_messages, history, elapsed_by_id
+
+
 def _finalize_result(
     success: bool,
     output: str,
@@ -211,31 +281,9 @@ def handle_message(
                 tokens=get_token_usage(),
             ), messages
 
-        # Execute first tool call (one at a time for feedback)
-        tc = tool_calls[0]
-        try:
-            args = json.loads(tc["arguments"])
-        except json.JSONDecodeError:
-            args = {}
-
-        tool_start = time.time()
-        result = execute_tool(tc["name"], args, workspace)
-        tool_elapsed = round(time.time() - tool_start, 1)
-
-        # Record the tool call
-        tool_history.append(ToolCall(
-            name=tc["name"],
-            args=args,
-            result=result[:800],
-            elapsed=tool_elapsed,
-        ))
-
-        # Add tool result to conversation
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "content": result,
-        })
+        tool_messages, round_history, _ = _execute_tool_turn(tool_calls, workspace)
+        tool_history.extend(round_history)
+        messages.extend(tool_messages)
 
     # Max rounds reached — return whatever we have
     return MessageResponse(
@@ -292,42 +340,25 @@ def handle_message_streaming(
             }
             return
 
-        # Execute first tool call
-        tc = tool_calls[0]
-        try:
-            args_preview = json.loads(tc["arguments"])
-        except json.JSONDecodeError:
-            args_preview = {}
-
-        tool_start = time.time()
-        result = execute_tool(tc["name"], args_preview, workspace)
-        tool_elapsed = round(time.time() - tool_start, 1)
-
-        # Yield tool call event
-        yield {
-            "type": "tool_call",
-            "tool": tc["name"],
-            "args": args_preview,
-            "result": result[:800],
-            "elapsed": elapsed,
-            "tool_elapsed": tool_elapsed,
-            "round": round_num + 1,
-            "tokens": get_token_usage(),
-        }
-
-        # If LLM also included text content, yield it
         if message.content:
             yield {
                 "type": "thinking",
                 "content": message.content,
             }
 
-        # Add tool result to conversation
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "content": result,
-        })
+        tool_messages, _, elapsed_by_id = _execute_tool_turn(tool_calls, workspace)
+        for tc, msg in zip(tool_calls, tool_messages):
+            yield {
+                "type": "tool_call",
+                "tool": tc["name"],
+                "args": _parse_tool_args(tc),
+                "result": msg["content"][:800],
+                "elapsed": elapsed,
+                "tool_elapsed": elapsed_by_id.get(tc["id"], 0),
+                "round": round_num + 1,
+                "tokens": get_token_usage(),
+            }
+        messages.extend(tool_messages)
 
     # Max rounds
     yield {
@@ -480,60 +511,41 @@ def run_task(
             messages.append({"role": "user", "content": TESTS_NOT_PASSED_NUDGE})
             continue
 
-        
-        # Parallel reads allowed, one write per turn
-        _READ_TOOLS = frozenset({
-            "list_files", "view_directory", "find_files", "read_file", "read_files",
-            "view_file_range", "search_code", "search_codebase", "search_and_read",
-            "explore_repo", "file_outline", "get_function", "git_status", "git_diff",
-            "git_log", "read_scratchpad",
-        })
-        if len(tool_calls) > 1:
-            # Allow multiple reads, but only one write
-            reads = [tc for tc in tool_calls if tc["name"] in _READ_TOOLS]
-            writes = [tc for tc in tool_calls if tc["name"] not in _READ_TOOLS]
-            if writes:
-                tool_calls = reads + writes[:1]
-                skipped = writes[1:]
-            else:
-                tool_calls = reads
-                skipped = []
-            if skipped:
-                extra_note = (
-                    f"\nNote: Skipped write tools (one per turn): "
-                    f"{', '.join(tc['name'] for tc in skipped)}."
-                )
-            else:
-                extra_note = ""
-        else:
-            extra_note = ""
+        to_execute, skipped = _plan_tool_calls(tool_calls)
+        skipped_ids = {tc["id"] for tc in skipped}
+        results_by_id: dict[str, str] = {}
 
-        # Execute all tool calls this turn (parallel reads, one write)
-        for tc in tool_calls:
-            try:
-                args = json.loads(tc["arguments"])
-            except json.JSONDecodeError:
-                args = {}
-
+        for tc in to_execute:
+            args = _parse_tool_args(tc)
             last_tool = tc["name"]
             last_result = execute_tool(last_tool, args, workspace)
+            results_by_id[tc["id"]] = last_result
             blocked_count = 0
 
             if last_tool == "write_file":
                 has_written = True
-
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": last_result,
-            })
 
             trajectory.log_step(
                 iteration=iteration, state=state.value, tool=last_tool,
                 args=args, result=last_result, tokens=get_token_usage(),
             )
 
-        last_result = last_result + extra_note
+        for tc in tool_calls:
+            content = _SKIP_WRITE_MSG if tc["id"] in skipped_ids else results_by_id[tc["id"]]
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": content,
+            })
+
+        if to_execute:
+            last_tool = to_execute[-1]["name"]
+            last_result = results_by_id[to_execute[-1]["id"]]
+        if skipped:
+            last_result = last_result + (
+                f"\nNote: Skipped write tools (one per turn): "
+                f"{', '.join(tc['name'] for tc in skipped)}."
+            )
 
         # Token budget check
         current_tokens = get_token_usage()
