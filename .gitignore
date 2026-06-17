@@ -13,3 +13,11 @@ workspace/humaneval/
 docs/roadmap.md
 
 .agent_history/
+
+logs/
+results/
+workspace/
+reflections/
+coding-agent-fsm.*
+progress.md
+.agent_history/
