@@ -269,6 +269,7 @@ def run_single_swebench_task(
             workspace=workspace,
             max_iterations=max_iterations,
             task_id=task.instance_id,
+            token_budget=500000,
         )
     except Exception as e:
         print(f"  Agent crashed: {e}")
