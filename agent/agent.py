@@ -23,6 +23,8 @@ _READ_TOOLS = frozenset({
     "explore_repo", "file_outline", "get_function", "git_status", "git_diff",
     "git_log", "read_scratchpad",
 })
+_DEP_ERROR_PATTERNS = ["ModuleNotFoundError", "ImportError", "No module named",
+                        "could not determine", "broken installation"]
 
 _SKIP_WRITE_MSG = "Skipped: only one write tool allowed per turn. Call this tool again next turn."
 
@@ -378,6 +380,8 @@ def run_task(
     workspace: Path,
     max_iterations: int = 12,
     token_budget: int = 200000,
+    system_prompt: str | None = None,
+    task_id: str = "interactive",
 ) -> TaskResult:
     """Run the agent loop with FSM control. Used for benchmarks."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -396,7 +400,7 @@ def run_task(
     reset_token_counter()
     reset_scratchpad()
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         {
             "role": "user",
             "content": f"Task:\n{description}\n\nWorkspace: {workspace.resolve()}",
@@ -415,8 +419,8 @@ def run_task(
     last_result: str = ""
     has_written = False
     blocked_count = 0
-    trajectory = Trajectory(task_id=description[:50].replace(" ", "_"))
-
+    dep_fail_count = 0
+    trajectory = Trajectory(task_id=task_id)
 
     for iteration in range(1, max_iterations + 1):
         messages = trim_context(messages)
@@ -529,6 +533,15 @@ def run_task(
                 iteration=iteration, state=state.value, tool=last_tool,
                 args=args, result=last_result, tokens=get_token_usage(),
             )
+            # Auto-detect dependency failures — stop retrying after 2 attempts
+            if last_tool == "run_tests" and any(p in last_result for p in _DEP_ERROR_PATTERNS):
+                dep_fail_count += 1
+                if dep_fail_count >= 2:
+                    messages.append({
+                        "role": "user",
+                        "content": "Dependencies cannot be installed in this environment. "
+                                   "STOP trying to run tests. Use git_diff to verify your patch instead."
+                    })
 
         for tc in tool_calls:
             content = _SKIP_WRITE_MSG if tc["id"] in skipped_ids else results_by_id[tc["id"]]

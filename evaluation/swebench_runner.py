@@ -33,6 +33,19 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent / "workspace" / "swebenc
 RESULTS_DIR    = Path(__file__).resolve().parent.parent / "results"
 MODEL_NAME     = "coding-agent-fsm"
 
+def _load_existing_predictions(run_id: str) -> dict[str, dict]:
+    """Load already-completed predictions for resume support."""
+    path = RESULTS_DIR / f"swebench_predictions_{run_id}.jsonl"
+    if not path.exists():
+        return {}
+    existing = {}
+    try:
+        for line in path.read_text(encoding="utf-8").strip().splitlines():
+            entry = json.loads(line)
+            existing[entry["instance_id"]] = entry
+    except (json.JSONDecodeError, OSError):
+        pass
+    return existing
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
@@ -161,33 +174,50 @@ def _build_task_description(task: SWETask) -> str:
 
 {task.problem_statement}
 
-## Your Task
+## Step-by-Step Workflow
 
-1. Use search_codebase to find code related to the bug
-2. Use read_file or view_file_range to understand the relevant code
-3. Apply a minimal fix using str_replace
-4. Use git_diff to verify your changes look correct
+### Step 1 — Understand the Problem (CRITICAL — do not skip)
+Read the problem statement above carefully. Before touching any code:
+- What is the expected behavior?
+- What is the actual (buggy) behavior?
+- What part of the codebase is likely involved? (module name, function name, class name)
+- Write your bug hypothesis to the scratchpad: write_scratchpad("hypothesis", "I think the bug is in X because Y")
 
-## Critical Rule About Tests
+### Step 2 — Locate the Bug
+- Use `search_codebase` with a description of what the buggy code does
+- Or use `search_and_read` with a specific function/class name from the problem statement
+- Do NOT use `list_files` — the repo has thousands of files, it wastes tokens
+- Do NOT read entire files — use `file_outline` first, then `get_function` or `view_file_range` for specific parts
+- Save what you find: write_scratchpad("location", "Bug is in file X, function Y, line Z")
 
-Tests may not run in this environment due to missing dependencies.
-If run_tests fails with ImportError or ModuleNotFoundError:
-- Do NOT spend more than one attempt trying to install dependencies
-- Instead, focus on reading the code, understanding the bug, and applying the fix
-- Use git_diff to verify your patch looks correct
-- A correct patch is more valuable than a working test environment
+### Step 3 — Understand the Root Cause
+- Read the specific function/method where the bug lives using `get_function` or `view_file_range`
+- Trace the data flow: what inputs cause the wrong output?
+- Check if other functions call the buggy code — use `search_code` to find callers
+- Update your hypothesis: write_scratchpad("root_cause", "The bug happens because X does Y instead of Z")
 
-## Important Rules
-
-- Make the smallest possible change that fixes the bug
+### Step 4 — Fix the Bug
+- Use `str_replace` or `edit_and_verify` — make the smallest possible change
+- Do NOT rewrite entire files or functions
 - Do NOT modify test files
 - Do NOT add new files unless absolutely necessary
-- Use search_codebase for semantic search (finds related code even without exact name match)
-- Use search_code for exact text matching (when you know the function or variable name)
-- Prefer str_replace over write_file — surgical edits only
-- Use git_diff before finishing to verify your patch
+- If the fix affects multiple locations, use `edit_files` to change them all at once
 
-## Failing Tests (for context — helps you understand what is broken)
+### Step 5 — Verify Your Fix
+- Use `git_diff` to review your patch — is it minimal and correct?
+- Check: does the diff match what you intended?
+- Check: could your change break anything else? Use `search_code` to find other callers
+- If confident, use `report_confidence` with your score and reasoning
+
+## Rules to Avoid Wasting Iterations
+
+- If `run_tests` fails with ImportError or ModuleNotFoundError: STOP trying to run tests. The environment does not have all dependencies. Use `git_diff` to verify instead.
+- Do NOT spend more than 1 iteration installing dependencies — it will not work
+- Do NOT re-read a file you already read — check your scratchpad instead
+- Do NOT use `list_files` or `explore_repo` — the repo is too large. Go straight to `search_codebase`
+- If you are stuck after 5 iterations, step back and re-read the problem statement
+
+## Failing Tests (context only — helps understand what is broken)
 
 {json.dumps(task.fail_to_pass, indent=2)}
 """
@@ -238,6 +268,7 @@ def run_single_swebench_task(
             description=description,
             workspace=workspace,
             max_iterations=max_iterations,
+            task_id=task.instance_id,
         )
     except Exception as e:
         print(f"  Agent crashed: {e}")
@@ -254,12 +285,34 @@ def run_single_swebench_task(
     # Extract patch
     patch = _get_patch(workspace)
 
+    # Strip any changes to test files — agent should never modify tests
+    if patch and "test_" in patch:
+        lines = patch.split("\n")
+        clean_lines = []
+        skip = False
+        for line in lines:
+            if line.startswith("diff --git") and "test_" in line:
+                skip = True
+                print(f"  Warning: stripping test file changes from patch")
+            elif line.startswith("diff --git"):
+                skip = False
+            if not skip:
+                clean_lines.append(line)
+        patch = "\n".join(clean_lines)
+        
     status = "PASS" if result.success else "FAIL"
     print(f"  Agent: {status} ({result.iterations} iterations)")
     print(f"  Patch: {len(patch)} chars")
     if result.tokens:
         print(f"  Tokens: {result.tokens.get('total', 0)}")
 
+    # Clean workspace to save disk space
+    try:
+        shutil.rmtree(workspace)
+        print(f"  Cleaned workspace: {workspace.name}")
+    except OSError:
+        pass
+    
     return SWEResult(
         instance_id=task.instance_id,
         model_patch=patch,
@@ -384,12 +437,15 @@ def run_swebench_benchmark(
     max_iterations: int = 20,
     run_eval: bool = True,
     max_workers: int = 4,
+    resume: bool = True,
 ) -> tuple[list[SWEResult], dict]:
     """
     Full pipeline: load tasks → run agent → save predictions → evaluate.
+    Supports resume — skips tasks that already have predictions.
     Returns (results, evaluation_report).
     """
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Use fixed run_id so resume works across restarts
+    run_id = "swebench_run"
 
     # Load tasks
     tasks = load_swebench_tasks(
@@ -399,22 +455,52 @@ def run_swebench_benchmark(
     )
     print(f"\nLoaded {len(tasks)} SWE-bench tasks")
 
+    # Load existing predictions for resume
+    existing = _load_existing_predictions(run_id) if resume else {}
+    if existing:
+        print(f"Found {len(existing)} existing predictions — resuming")
+
     # Run agent on each task
     results: list[SWEResult] = []
+
+    # First, convert existing predictions to SWEResult objects
+    for task in tasks:
+        if task.instance_id in existing:
+            pred = existing[task.instance_id]
+            results.append(SWEResult(
+                instance_id=task.instance_id,
+                model_patch=pred.get("model_patch", ""),
+                success=bool(pred.get("model_patch", "")),
+                iterations=0,
+                tokens=None,
+                error="resumed",
+                agent_output="",
+            ))
+
+    skipped = len(results)
+    total = len(tasks)
+
     for i, task in enumerate(tasks, 1):
-        print(f"\n[{i}/{len(tasks)}] {task.instance_id}")
+        # Skip already completed tasks
+        if task.instance_id in existing:
+            continue
+
+        print(f"\n[{i}/{total}] {task.instance_id} (new — {skipped + len(results) - skipped}/{total} done)")
         result = run_single_swebench_task(task, max_iterations=max_iterations)
         results.append(result)
 
-        # Save incrementally in case of crash
+        # Save incrementally after every task
         save_predictions(results, run_id)
         save_agent_results(results, run_id)
 
     # Print agent summary
+    new_tasks = len(results) - skipped
     print(f"\n{'='*60}")
     print(f"AGENT SUMMARY")
     print(f"{'='*60}")
     print(f"Total tasks:    {len(results)}")
+    print(f"Resumed:        {skipped}")
+    print(f"New this run:   {new_tasks}")
     print(f"With patch:     {sum(1 for r in results if r.model_patch)}")
     print(f"Agent passed:   {sum(1 for r in results if r.success)}")
     total_tokens = sum(

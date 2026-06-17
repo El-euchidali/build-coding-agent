@@ -110,6 +110,8 @@ TESTS_NOT_PASSED_NUDGE = """Tests have NOT passed yet. You must not stop.
 
 Do not reply with a summary until you see `[TEST_RESULT:PASS]` in the test output."""
 
+# ── Task-specific addendums (appended to task description, NOT system prompt) ─
+
 HUMANEVAL_TASK_ADDENDUM = """
 HumanEval notes:
 - The function stub is already in solution.py with the signature and docstring
