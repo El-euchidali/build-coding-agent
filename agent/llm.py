@@ -1,7 +1,58 @@
 import os
-import time 
+import re
+import time
 from dotenv import load_dotenv
 from openai import OpenAI
+
+_SECTION_MARKERS = ("## ", "[CONTEXT TRIMMED]")
+
+
+def _remove_section_by_header(content: str, header: str) -> str:
+    """Remove a labeled block from system content (header through next section)."""
+    if header not in content:
+        return content
+    idx = content.index(header)
+    before = content[:idx].rstrip()
+    remainder = content[idx + len(header) :]
+    match = re.search(
+        r"\n(?:" + "|".join(re.escape(m) for m in _SECTION_MARKERS) + ")",
+        remainder,
+    )
+    if match:
+        after = remainder[match.start() :]
+        return (before + after).strip()
+    return before
+
+
+def consolidate_system_messages(messages: list[dict]) -> list[dict]:
+    """Merge all system messages into a single message at index 0."""
+    system_parts: list[str] = []
+    rest: list[dict] = []
+    for msg in messages:
+        if msg.get("role") == "system":
+            part = msg.get("content", "")
+            if part:
+                system_parts.append(part)
+        else:
+            rest.append(msg)
+    if not system_parts:
+        return list(messages)
+    return [{"role": "system", "content": "\n\n".join(system_parts)}] + rest
+
+
+def set_system_section(messages: list[dict], header: str, section: str) -> list[dict]:
+    """Replace a labeled section inside the leading system message."""
+    messages = consolidate_system_messages(messages)
+    if not messages:
+        messages = [{"role": "system", "content": ""}]
+    elif messages[0].get("role") != "system":
+        messages.insert(0, {"role": "system", "content": ""})
+
+    content = _remove_section_by_header(messages[0].get("content", ""), header)
+    if section:
+        content = f"{content.rstrip()}\n\n{section}".strip()
+    messages[0] = {"role": "system", "content": content}
+    return messages
 
 load_dotenv()
 
@@ -107,7 +158,7 @@ def trim_context(
             summary += f"- Errors encountered: {len(errors)}\n"
         summary += f"- {len(middle)} messages trimmed to save context space.\n"
 
-        head.append({"role": "system", "content": summary})
+        head = set_system_section(head, "[CONTEXT TRIMMED]", summary)
 
     trimmed = head + recent
 
@@ -131,6 +182,7 @@ def chat(messages: list[dict], tools: list | None = None, use_light: bool = Fals
         if light_model:
             model = light_model
 
+    messages = consolidate_system_messages(messages)
     kwargs: dict = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
