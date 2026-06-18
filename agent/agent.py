@@ -420,6 +420,8 @@ def run_task(
     has_written = False
     blocked_count = 0
     dep_fail_count = 0
+    consecutive_reads = 0
+
     trajectory = Trajectory(task_id=task_id)
 
     for iteration in range(1, max_iterations + 1):
@@ -585,6 +587,21 @@ def run_task(
         # FSM: transition to next state
         state = transition(state, last_tool, last_result, iteration)
 
+        # Detect analysis paralysis — reading repeatedly without editing
+        if last_tool in _READ_TOOLS:
+            consecutive_reads += 1
+        else:
+            consecutive_reads = 0
+        if consecutive_reads >= 4:
+            messages.append({
+                "role": "user",
+                "content": "You have read code 4 times without making an edit. "
+                           "STOP reading. You have enough information. "
+                           "Apply your fix NOW with edit_and_verify or str_replace. "
+                           "If unsure of exact text, read ONLY the specific lines you will change, then edit immediately."
+            })
+            consecutive_reads = 0
+        
         if state == AgentState.DONE:
             trajectory.log_result(success=True, tokens=get_token_usage())
             trajectory.save()
