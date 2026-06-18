@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent.llm import chat, get_token_usage, reset_token_counter, trim_context
+from agent.llm import chat, get_token_usage, reset_token_counter, trim_context, set_system_section
 from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
 from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
 from agent.failure import classify_failure, tests_passed_in_history
@@ -317,10 +317,7 @@ def handle_message_streaming(
         pad_content = "## Your Scratchpad Notes\n"
         for key, value in scratchpad.items():
             pad_content += f"### {key}\n{value}\n\n"
-        # Remove old scratchpad injection if present
-        messages = [m for m in messages if not m.get("content", "").startswith("## Your Scratchpad Notes")]
-        # Insert after system prompt and task
-        messages.insert(2, {"role": "system", "content": pad_content})
+        messages = set_system_section(messages, "## Your Scratchpad Notes", pad_content)
 
     for round_num in range(max_tool_rounds):
         start_time = time.time()
@@ -410,7 +407,7 @@ def run_task(
     # Inject past reflections if available
     past = get_past_reflections(description)
     if past:
-        messages.insert(2, {"role": "system", "content": past})
+        messages = set_system_section(messages, "## Lessons from Past Failures", past)
 
     last_output = ""
     nudge_count = 0
@@ -432,10 +429,7 @@ def run_task(
             pad_content = "## Your Scratchpad Notes\n"
             for key, value in scratchpad.items():
                 pad_content += f"### {key}\n{value}\n\n"
-            # Remove old scratchpad injection if present
-            messages = [m for m in messages if not m.get("content", "").startswith("## Your Scratchpad Notes")]
-            # Insert after system prompt and task
-            messages.insert(2, {"role": "system", "content": pad_content})
+            messages = set_system_section(messages, "## Your Scratchpad Notes", pad_content)
 
         # Loop detection
         if _detect_loop(messages):
