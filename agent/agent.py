@@ -533,14 +533,20 @@ def run_task(
                 iteration=iteration, state=state.value, tool=last_tool,
                 args=args, result=last_result, tokens=get_token_usage(),
             )
-            # Auto-detect dependency failures — stop retrying after 2 attempts
-            if last_tool == "run_tests" and any(p in last_result for p in _DEP_ERROR_PATTERNS):
+            # Auto-detect tests that cannot run (broken env or dependency failure)
+            tests_cant_run = (
+                last_tool == "run_tests" and (
+                    any(p in last_result for p in _DEP_ERROR_PATTERNS)
+                    or "[TEST_RESULT:FAIL] passed=0 failed=0 errors=0" in last_result
+                )
+            )
+            if tests_cant_run:
                 dep_fail_count += 1
                 if dep_fail_count >= 2:
                     messages.append({
                         "role": "user",
-                        "content": "Dependencies cannot be installed in this environment. "
-                                   "STOP trying to run tests. Use git_diff to verify your patch instead."
+                        "content": "Tests cannot run in this environment (broken pytest config or missing dependencies). "
+                                   "STOP running tests. Apply your fix with str_replace, verify with git_diff, then finish."
                     })
 
         for tc in tool_calls:
