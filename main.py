@@ -133,9 +133,10 @@ def cmd_benchmark(limit: int | None, max_iterations: int) -> int:
 
     return 0 if metrics["passed"] == metrics["total"] else 1
 
-def cmd_swebench(limit: int | None, max_iterations: int, run_eval: bool) -> int:
+def cmd_swebench(limit: int | None, max_iterations: int, run_eval: bool, instance_ids: list | None = None) -> int:
     from evaluation.swebench_runner import run_swebench_benchmark
     results, report = run_swebench_benchmark(
+        instance_ids=instance_ids,
         limit=limit,
         max_iterations=max_iterations,
         run_eval=run_eval,
@@ -150,6 +151,7 @@ def main() -> int:
     parser.add_argument("--task", type=str, metavar="ID", help="Run single task (e.g. 001)")
     parser.add_argument("--benchmark", action="store_true", help="Run custom JSON benchmark")
     parser.add_argument("--swebench", action="store_true", help="Run SWE-bench Verified benchmark")
+    parser.add_argument("--instance-ids", nargs="+", default=None, help="Specific SWE-bench instance IDs to run")
     parser.add_argument("--no-eval", action="store_true", help="Skip official evaluation (agent only)")
     parser.add_argument(
         "--humaneval",
@@ -198,7 +200,7 @@ def main() -> int:
             args.timeout,
         )
     if args.swebench:
-        return cmd_swebench(args.limit, args.max_iterations, not args.no_eval)
+        return cmd_swebench(args.limit, args.max_iterations, not args.no_eval, args.instance_ids)
 
     parser.print_help()
     return 0
