@@ -197,11 +197,20 @@ Read the problem statement above carefully. Before touching any code:
 - Update your hypothesis: write_scratchpad("root_cause", "The bug happens because X does Y instead of Z")
 
 ### Step 4 — Fix the Bug
+
+CRITICAL — How to edit without "old_str not found" errors:
+1. FIRST read the exact lines you want to change using `view_file_range` or `get_function` — in the turn right before you edit.
+2. Copy `old_str` CHARACTER-FOR-CHARACTER from what you just read, including all indentation and whitespace.
+3. NEVER type old_str from memory or from the problem statement — only copy it from a fresh read of the actual file.
+4. If `str_replace` or `edit_and_verify` says "old_str not found", you guessed wrong. Re-read the exact lines and copy them precisely. Do NOT retry the same old_str.
+
+Editing rules:
 - Use `str_replace` or `edit_and_verify` — make the smallest possible change
+- `get_function` takes ONLY the function or class name, never "Class.method" (use "write", not "HTML.write")
 - Do NOT rewrite entire files or functions
 - Do NOT modify test files
 - Do NOT add new files unless absolutely necessary
-- If the fix affects multiple locations, use `edit_files` to change them all at once
+- Apply your edit early — do not spend more than 3 iterations exploring before you read the target code and fix it
 
 ### Step 5 — Verify Your Fix
 - Use `git_diff` to review your patch — is it minimal and correct?
