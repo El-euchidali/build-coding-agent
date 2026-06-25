@@ -72,6 +72,15 @@ class SWEResult:
     agent_output: str
 
 
+def _stop_reason(success: bool, error: str | None, has_patch: bool) -> str:
+    """Why the agent loop stopped. Not an official SWE-bench resolve score."""
+    if error:
+        return error
+    if success:
+        return "finished_with_patch" if has_patch else "finished"
+    return "unknown"
+
+
 # ── Dataset loading ───────────────────────────────────────────────────────────
 
 def load_swebench_tasks(
@@ -310,9 +319,9 @@ def run_single_swebench_task(
                 clean_lines.append(line)
         patch = "\n".join(clean_lines)
         
-    status = "PASS" if result.success else "FAIL"
-    print(f"  Agent: {status} ({result.iterations} iterations)")
-    print(f"  Patch: {len(patch)} chars")
+    print(f"  Iterations: {result.iterations}")
+    print(f"  Patch:      {len(patch)} chars")
+    print(f"  Stop:       {_stop_reason(result.success, result.error, bool(patch))}")
     if result.tokens:
         print(f"  Tokens: {result.tokens.get('total', 0)}")
 
@@ -367,11 +376,10 @@ def save_agent_results(results: list[SWEResult], run_id: str) -> Path:
         "model": MODEL_NAME,
         "total": len(results),
         "with_patch": sum(1 for r in results if r.model_patch),
-        "agent_passed": sum(1 for r in results if r.success),
         "tasks": [
             {
                 "instance_id": r.instance_id,
-                "success": r.success,
+                "stop_reason": _stop_reason(r.success, r.error, bool(r.model_patch)),
                 "iterations": r.iterations,
                 "tokens": r.tokens,
                 "error": r.error,
@@ -512,7 +520,7 @@ def run_swebench_benchmark(
     print(f"Resumed:        {skipped}")
     print(f"New this run:   {new_tasks}")
     print(f"With patch:     {sum(1 for r in results if r.model_patch)}")
-    print(f"Agent passed:   {sum(1 for r in results if r.success)}")
+    print(f"(Official resolve rate requires Docker evaluation — not shown here)")
     total_tokens = sum(
         r.tokens.get('total', 0) for r in results if r.tokens
     )

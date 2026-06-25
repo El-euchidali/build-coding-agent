@@ -1,4 +1,5 @@
 import ast
+import difflib
 import json
 import subprocess
 import sys
@@ -352,8 +353,12 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "str_replace",
             "description": (
-                "Replace exact text in a file. Fails if old_str not found or appears more than once. "
-                "Use this for single-file fixes. For multi-file use edit_files or search_and_replace_all."
+                "Replace text in a file. Tries an exact match first, then falls back to a "
+                "whitespace-tolerant match (so small indentation differences still apply). "
+                "Returns [EDIT:OK] on success, [EDIT:AMBIGUOUS] if old_str matches multiple "
+                "places (add more context), or [EDIT:FAILED] with the closest real lines if no "
+                "match is found — copy those exactly to retry. Use this for single-file fixes; "
+                "for multi-file use edit_files or search_and_replace_all."
             ),
             "parameters": {
                 "type": "object",
@@ -762,7 +767,7 @@ def search_and_read(workspace: Path, query: str, context_lines: int = 10) -> str
 
 def edit_and_verify(workspace: Path, filepath: str, old_str: str, new_str: str) -> str:
     result = str_replace(workspace, filepath, old_str, new_str)
-    if result.startswith("Error"):
+    if not result.startswith("[EDIT:OK]"):
         return result
     diff = FileSystem(workspace).git("diff")
     return f"{result}\n\n--- git diff ---\n{diff}"
@@ -770,15 +775,19 @@ def edit_and_verify(workspace: Path, filepath: str, old_str: str, new_str: str) 
 
 def edit_files(workspace: Path, edits: list[dict]) -> str:
     results = []
+    any_ok = False
     for edit in edits[:5]:
         fp = edit.get("filepath", "")
         old = edit.get("old_str", "")
         new = edit.get("new_str", "")
         result = str_replace(workspace, fp, old, new)
+        if result.startswith("[EDIT:OK]"):
+            any_ok = True
         results.append(f"{fp}: {result}")
-    diff = FileSystem(workspace).git("diff")
-    if diff and diff != "(no output)":
-        results.append(f"\n--- git diff ---\n{diff}")
+    if any_ok:
+        diff = FileSystem(workspace).git("diff")
+        if diff and diff != "(no output)":
+            results.append(f"\n--- git diff ---\n{diff}")
     return "\n".join(results)
 
 
@@ -833,19 +842,151 @@ def write_file(workspace: Path, filepath: str, content: str) -> str:
     return f"Wrote {len(content)} bytes to {filepath}"
 
 
+def _leading_ws(line: str) -> str:
+    """Return the leading-whitespace prefix of a line."""
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _strip_blank_edges(lines: list[str]) -> list[str]:
+    """Drop leading and trailing blank lines from a list of lines."""
+    while lines and lines[0].strip() == "":
+        lines = lines[1:]
+    while lines and lines[-1].strip() == "":
+        lines = lines[:-1]
+    return lines
+
+
+def _flexible_line_matches(content: str, old_str: str) -> list[tuple[int, int]]:
+    """
+    Find windows in `content` that match `old_str` line-by-line, ignoring each
+    line's leading/trailing whitespace. Returns a list of (start, end) line
+    indices (0-based, end exclusive).
+    """
+    content_lines = content.splitlines()
+    old_lines = _strip_blank_edges(old_str.splitlines())
+    if not old_lines:
+        return []
+    norm_old = [l.strip() for l in old_lines]
+    n = len(norm_old)
+    matches: list[tuple[int, int]] = []
+    for i in range(len(content_lines) - n + 1):
+        if [content_lines[j].strip() for j in range(i, i + n)] == norm_old:
+            matches.append((i, i + n))
+    return matches
+
+
+def _reindent(text: str, old_indent: str, file_indent: str) -> str:
+    """Shift every non-blank line of `text` from old_indent to file_indent."""
+    if old_indent == file_indent:
+        return text
+    out = []
+    for line in text.splitlines():
+        if line.strip() == "":
+            out.append(line)
+        elif line.startswith(old_indent):
+            out.append(file_indent + line[len(old_indent):])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _apply_flexible(content: str, old_str: str, new_str: str,
+                    match: tuple[int, int]) -> str:
+    """Replace the matched line window, re-indenting new_str to the file's indentation."""
+    start, end = match
+    content_lines = content.splitlines(keepends=True)
+    file_block = content_lines[start:end]
+
+    file_indent = _leading_ws(file_block[0].rstrip("\n")) if file_block else ""
+    old_indent = ""
+    for l in old_str.splitlines():
+        if l.strip():
+            old_indent = _leading_ws(l)
+            break
+
+    new_block = _reindent(new_str, old_indent, file_indent)
+    new_lines = [l + "\n" for l in new_block.splitlines()]
+    # Preserve a missing trailing newline at end-of-file
+    if file_block and not file_block[-1].endswith("\n") and new_lines:
+        new_lines[-1] = new_lines[-1].rstrip("\n")
+
+    rebuilt = content_lines[:start] + new_lines + content_lines[end:]
+    return "".join(rebuilt)
+
+
+def _closest_lines_hint(content: str, old_str: str, context: int = 3) -> str:
+    """Return the file lines most similar to old_str so the model can retry exactly."""
+    content_lines = content.splitlines()
+    old_lines = [l for l in old_str.splitlines() if l.strip()]
+    if not old_lines or not content_lines:
+        return "Re-read the file and copy the exact text (including indentation)."
+    anchor = old_lines[0].strip()
+    best_idx, best_ratio = -1, 0.0
+    for i, line in enumerate(content_lines):
+        ratio = difflib.SequenceMatcher(None, line.strip(), anchor).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_idx = ratio, i
+    if best_idx < 0 or best_ratio < 0.5:
+        return "No similar lines found — re-read the file to copy the exact text."
+    lo = max(0, best_idx - context)
+    hi = min(len(content_lines), best_idx + context + 1)
+    snippet = "\n".join(f"{i + 1:4d} | {content_lines[i]}" for i in range(lo, hi))
+    return (
+        "Closest lines in the file (copy these EXACTLY, including indentation):\n"
+        + snippet
+    )
+
+
 def str_replace(workspace: Path, filepath: str, old_str: str, new_str: str) -> str:
     target = _resolve_path(workspace, filepath)
     if not target.exists():
-        return f"Error: {filepath} not found"
+        return f"[EDIT:FAILED] {filepath} not found"
+    if not old_str:
+        return f"[EDIT:FAILED] old_str is empty for {filepath}"
+    if old_str == new_str:
+        return (
+            f"[EDIT:NOOP] old_str and new_str are identical in {filepath} — "
+            f"no change was made. Provide a different new_str that fixes the bug."
+        )
     content = target.read_text(encoding="utf-8")
-    count = content.count(old_str)
-    if count == 0:
-        return f"Error: old_str not found in {filepath}"
-    if count > 1:
-        return f"Error: old_str appears {count} times in {filepath} — be more specific"
-    new_content = content.replace(old_str, new_str, 1)
-    target.write_text(new_content, encoding="utf-8")
-    return f"Successfully replaced in {filepath}. Use git_diff to see full changes — do not re-read the entire file."
+
+    # 1. Exact match (preferred — preserves content verbatim)
+    exact = content.count(old_str)
+    if exact == 1:
+        target.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
+        return (
+            f"[EDIT:OK] Replaced 1 exact match in {filepath}. "
+            f"Use git_diff to confirm — do not re-read the whole file."
+        )
+    if exact > 1:
+        return (
+            f"[EDIT:AMBIGUOUS] old_str appears {exact} times in {filepath} — "
+            f"add surrounding lines to make it unique."
+        )
+
+    # 2. Whitespace-tolerant match (handles wrong indentation)
+    matches = _flexible_line_matches(content, old_str)
+    if len(matches) == 1:
+        new_content = _apply_flexible(content, old_str, new_str, matches[0])
+        if new_content == content:
+            return (
+                f"[EDIT:NOOP] old_str and new_str are identical in {filepath} — "
+                f"no change was made. Provide a different new_str that fixes the bug."
+            )
+        target.write_text(new_content, encoding="utf-8")
+        return (
+            f"[EDIT:OK] Replaced 1 match in {filepath} (indentation normalized to the file). "
+            f"Use git_diff to confirm — do not re-read the whole file."
+        )
+    if len(matches) > 1:
+        return (
+            f"[EDIT:AMBIGUOUS] old_str matches {len(matches)} locations in {filepath} "
+            f"(ignoring indentation) — add more surrounding context."
+        )
+
+    # 3. No match — return the closest real lines so the model can retry correctly
+    hint = _closest_lines_hint(content, old_str)
+    return f"[EDIT:FAILED] old_str not found in {filepath}.\n{hint}"
 
 
 def insert_at_line(workspace: Path, filepath: str, line_number: int, content: str) -> str:
