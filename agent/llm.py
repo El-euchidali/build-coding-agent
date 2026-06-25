@@ -169,10 +169,18 @@ def trim_context(
     return trimmed
 
 
-def chat(messages: list[dict], tools: list | None = None, use_light: bool = False):
+def chat(
+    messages: list[dict],
+    tools: list | None = None,
+    use_light: bool = False,
+    temperature: float | None = None,
+):
     """
     Send chat completion with automatic retry on transient errors.
     Retries up to 3 times with exponential backoff.
+
+    `temperature` is passed through when provided — use a low value (e.g. 0.0)
+    for deterministic editing/fixing steps to reduce run-to-run variance.
     """
     client = get_client()
     model = os.environ.get("INNKUBE_MODEL", "gemma4-31b-it")
@@ -184,6 +192,8 @@ def chat(messages: list[dict], tools: list | None = None, use_light: bool = Fals
 
     messages = consolidate_system_messages(messages)
     kwargs: dict = {"model": model, "messages": messages}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"

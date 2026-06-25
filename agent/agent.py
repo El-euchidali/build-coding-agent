@@ -26,6 +26,84 @@ _READ_TOOLS = frozenset({
 _DEP_ERROR_PATTERNS = ["ModuleNotFoundError", "ImportError", "No module named",
                         "could not determine", "broken installation"]
 
+# Surgical edits to existing files. Writing a brand-new file (e.g. a repro
+# script) does NOT count — that keeps the agent from "satisfying" the
+# decisiveness nudge without actually fixing source.
+_EDIT_TOOLS = frozenset({
+    "str_replace", "edit_and_verify", "edit_files",
+    "search_and_replace_all", "insert_at_line", "delete_lines",
+})
+
+# Turns without a successful source edit before we nudge the agent to commit.
+_EDIT_NUDGE_THRESHOLD = 6
+
+
+def _edit_succeeded(tool: str, result: str) -> bool:
+    """True only when an edit tool actually changed a file."""
+    if tool in ("str_replace", "edit_and_verify"):
+        return result.startswith("[EDIT:OK]")
+    if tool == "edit_files":
+        return "[EDIT:OK]" in result and "[EDIT:NOOP]" not in result
+    if tool == "search_and_replace_all":
+        return result.startswith("Replaced in")
+    if tool == "insert_at_line":
+        return result.startswith("Inserted")
+    if tool == "delete_lines":
+        return result.startswith("Deleted")
+    return False
+
+
+def _is_env_failure(tool: str, result: str) -> bool:
+    """Detect tests/commands that failed due to a broken environment or deps."""
+    if tool == "run_tests":
+        return (
+            any(p in result for p in _DEP_ERROR_PATTERNS)
+            or "[TEST_RESULT:FAIL] passed=0 failed=0 errors=0" in result
+        )
+    if tool in ("run_command", "run_code"):
+        return (
+            any(p in result for p in _DEP_ERROR_PATTERNS)
+            or "subprocess-exited-with" in result
+            or "build_ext" in result
+            or "build editable: finished with status 'error'" in result
+        )
+    return False
+
+
+def _git_diff_has_changes(result: str) -> bool:
+    """True when a git_diff tool result shows an actual patch."""
+    text = result.strip()
+    if not text or text in ("(no changes)", "(no output)"):
+        return False
+    return "diff --git" in text or text.startswith("--- ")
+
+
+def _workspace_has_patch(workspace: Path) -> bool:
+    """True when the workspace has unstaged changes to tracked files."""
+    diff = FileSystem(workspace).git("diff")
+    return _git_diff_has_changes(diff or "")
+
+
+def _parse_confidence_score(result: str) -> int | None:
+    import re
+    match = re.search(r"Confidence (\d+)/10", result)
+    return int(match.group(1)) if match else None
+
+
+def _can_finish_without_tests(
+    edit_made: bool,
+    env_cannot_verify: bool,
+    workspace: Path,
+) -> bool:
+    """
+    Allow DONE when tests cannot run but a real source patch exists.
+
+    Uses git diff on the workspace as the source of truth — not tool
+    messages alone (edit_and_verify can report [EDIT:OK] for no-op replaces).
+    """
+    return edit_made and env_cannot_verify and _workspace_has_patch(workspace)
+
+
 _SKIP_WRITE_MSG = "Skipped: only one write tool allowed per turn. Call this tool again next turn."
 
 # System prompt for conversational mode — more flexible than task runner
@@ -417,7 +495,10 @@ def run_task(
     has_written = False
     blocked_count = 0
     dep_fail_count = 0
-    consecutive_reads = 0
+    iters_since_edit = 0
+    edit_made = False
+    env_cannot_verify = False
+    patch_verified = False
 
     trajectory = Trajectory(task_id=task_id)
 
@@ -443,9 +524,11 @@ def run_task(
         # FSM: get tools valid for current state
         tools = get_tools_for_state(state, TOOL_SCHEMAS, has_written)
 
-        # Use light model for exploration, full model for implementation/fixing
+        # Use light model for exploration, full model for implementation/fixing.
+        # Low temperature for editing states reduces run-to-run variance.
         use_light = state in (AgentState.PLAN, AgentState.EXPLORE)
-        message = chat(messages, tools=tools, use_light=use_light)
+        temperature = 0.0 if state in (AgentState.IMPLEMENT, AgentState.FIX) else None
+        message = chat(messages, tools=tools, use_light=use_light, temperature=temperature)
         messages.append(_assistant_message_dict(message))
         last_output = message.content or ""
 
@@ -514,6 +597,7 @@ def run_task(
         to_execute, skipped = _plan_tool_calls(tool_calls)
         skipped_ids = {tc["id"] for tc in skipped}
         results_by_id: dict[str, str] = {}
+        pending_nudges: list[str] = []
 
         for tc in to_execute:
             args = _parse_tool_args(tc)
@@ -525,25 +609,38 @@ def run_task(
             if last_tool == "write_file":
                 has_written = True
 
+            if last_tool in _EDIT_TOOLS and _edit_succeeded(last_tool, last_result):
+                edit_made = True
+                iters_since_edit = 0
+
+            if last_tool == "git_diff" and _git_diff_has_changes(last_result):
+                patch_verified = True
+            elif last_tool == "git_diff" and edit_made and not _workspace_has_patch(workspace):
+                pending_nudges.append(
+                    "git_diff shows no changes to tracked source files. "
+                    "Your last edit may not have applied — if you saw [EDIT:FAILED] or "
+                    "[EDIT:NOOP], copy the exact lines and retry str_replace with a real change."
+                )
+
+            if last_tool == "report_confidence":
+                score = _parse_confidence_score(last_result)
+                if score is not None and score >= 8 and edit_made and _workspace_has_patch(workspace):
+                    patch_verified = True
+
             trajectory.log_step(
                 iteration=iteration, state=state.value, tool=last_tool,
                 args=args, result=last_result, tokens=get_token_usage(),
             )
-            # Auto-detect tests that cannot run (broken env or dependency failure)
-            tests_cant_run = (
-                last_tool == "run_tests" and (
-                    any(p in last_result for p in _DEP_ERROR_PATTERNS)
-                    or "[TEST_RESULT:FAIL] passed=0 failed=0 errors=0" in last_result
-                )
-            )
-            if tests_cant_run:
+            # Count tests AND failed build/install commands toward the dep cap
+            if _is_env_failure(last_tool, last_result):
                 dep_fail_count += 1
                 if dep_fail_count >= 2:
-                    messages.append({
-                        "role": "user",
-                        "content": "Tests cannot run in this environment (broken pytest config or missing dependencies). "
-                                   "STOP running tests. Apply your fix with str_replace, verify with git_diff, then finish."
-                    })
+                    env_cannot_verify = True
+                    pending_nudges.append(
+                        "The environment cannot run tests or installs (broken config or missing dependencies). "
+                        "STOP running tests and pip/build commands. Apply your fix with str_replace, "
+                        "verify with git_diff, then stop — a correct patch is enough when tests cannot run."
+                    )
 
         for tc in tool_calls:
             content = _SKIP_WRITE_MSG if tc["id"] in skipped_ids else results_by_id[tc["id"]]
@@ -561,6 +658,9 @@ def run_task(
                 f"\nNote: Skipped write tools (one per turn): "
                 f"{', '.join(tc['name'] for tc in skipped)}."
             )
+
+        for nudge in pending_nudges:
+            messages.append({"role": "user", "content": nudge})
 
         # Token budget check
         current_tokens = get_token_usage()
@@ -581,20 +681,26 @@ def run_task(
         # FSM: transition to next state
         state = transition(state, last_tool, last_result, iteration)
 
-        # Detect analysis paralysis — reading repeatedly without editing
-        if last_tool in _READ_TOOLS:
-            consecutive_reads += 1
-        else:
-            consecutive_reads = 0
-        if consecutive_reads >= 4:
+        # Finish when tests cannot run but git shows a real patch in the workspace
+        if _can_finish_without_tests(edit_made, env_cannot_verify, workspace):
+            trajectory.log_result(success=True, tokens=get_token_usage())
+            trajectory.save()
+            return _finalize_result(True, last_output, iteration, messages)
+
+        # Decisiveness: nudge if too many turns pass without a successful source
+        # edit. Counts ANY non-editing turn (reads, scratchpad, commands), so
+        # interleaving them no longer hides analysis paralysis.
+        iters_since_edit += 1
+        if iters_since_edit >= _EDIT_NUDGE_THRESHOLD and state != AgentState.DONE:
+            verb = "resume editing" if edit_made else "make your first edit"
             messages.append({
                 "role": "user",
-                "content": "You have read code 4 times without making an edit. "
-                           "STOP reading. You have enough information. "
-                           "Apply your fix NOW with edit_and_verify or str_replace. "
-                           "If unsure of exact text, read ONLY the specific lines you will change, then edit immediately."
+                "content": f"You have gone {iters_since_edit} turns without successfully editing a source file. "
+                           f"STOP exploring and running commands — {verb} NOW with str_replace on the specific "
+                           "file and lines. If a previous edit returned [EDIT:FAILED], copy the exact lines it "
+                           "showed you. Do not write new scratch/repro files to satisfy this."
             })
-            consecutive_reads = 0
+            iters_since_edit = 0
         
         if state == AgentState.DONE:
             trajectory.log_result(success=True, tokens=get_token_usage())
