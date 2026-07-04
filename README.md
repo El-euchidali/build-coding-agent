@@ -59,14 +59,38 @@ You: Fix the bug in auth.py
 Agent: [reads, edits, tests] Fixed — the token validation...
 ```
 
-### Web UI — Browser Chat
+### Web IDE — Browser IDE with Terminal
+
+The IDE UI provides a file tree, agent chat, and an interactive terminal (Xterm.js) in the selected project directory.
+
+**Production (single server):**
 
 ```bash
+cd ui/frontend && npm install && npm run build
+cd ../..
 python -m ui.app
 # Open http://localhost:8000
 ```
 
-Features: chat bubbles, collapsible tool cards, file sidebar, live token counter, typing indicator.
+Enter a project path (existing or new — missing folders are created on open), or click **Browse…** to pick a folder. Clicking **Open** simultaneously:
+- Initializes the coding harness (`init_conversation`) in that directory
+- Spawns a shell with CWD set to that path (Python PTY over WebSocket)
+- Loads the file tree for the workspace
+
+**Development (hot reload frontend):**
+
+```bash
+# Terminal 1 — backend
+python -m ui.app
+
+# Terminal 2 — Vite dev server (proxies /api and /ws to :8000)
+cd ui/frontend && npm install && npm run dev
+# Open http://localhost:5173
+```
+
+Optional: restrict openable paths with `ALLOWED_WORKSPACE_ROOTS=/path/a,/path/b`.
+
+Features: nested file tree, chat with SSE streaming, collapsible tool cards, file preview panel, live token counter, Xterm.js terminal.
 
 ### Benchmarks
 
@@ -136,8 +160,14 @@ evaluation/
 ├── runner.py           # Custom benchmark runner
 ├── metrics.py          # Evaluation metrics
 ui/
-├── app.py             # FastAPI web backend
-├── index.html         # Chat UI frontend
+├── app.py             # FastAPI backend (REST + WebSocket + static)
+├── session.py         # Workspace session + path validation
+├── terminal.py        # PTY manager for Xterm.js
+└── frontend/          # Vite + TypeScript IDE frontend
+    ├── src/
+    │   ├── components/  # pathPicker, fileTree, terminal, chat
+    │   └── main.ts
+    └── dist/          # Built assets (after npm run build)
 docs/
 ├── failure_analysis.md # HumanEval failure analysis
 ```
