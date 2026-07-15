@@ -21,3 +21,6 @@ reflections/
 coding-agent-fsm.*
 progress.md
 .agent_history/
+
+ui/frontend/node_modules/
+ui/frontend/dist/

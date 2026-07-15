@@ -12,11 +12,45 @@ from agent.filesystem import FileSystem
 # Global scratchpad — survives context trimming
 _scratchpad: dict[str, str] = {}
 
+# Per-turn file read cache (mtime-invalidated) — avoids redundant disk reads
+_read_cache: dict[str, tuple[float, str]] = {}
+
 
 def reset_scratchpad():
     """Clear scratchpad between tasks."""
     global _scratchpad
     _scratchpad = {}
+
+
+def reset_read_cache() -> None:
+    """Clear file read cache at the start of each user turn."""
+    global _read_cache
+    _read_cache = {}
+
+
+def _file_cache_key(workspace: Path, filepath: str) -> str:
+    return f"{workspace.resolve()}|{filepath}"
+
+
+def _invalidate_file_cache(workspace: Path, filepath: str) -> None:
+    _read_cache.pop(_file_cache_key(workspace, filepath), None)
+
+
+def _cached_file_content(workspace: Path, filepath: str) -> str | None:
+    try:
+        target = _resolve_path(workspace, filepath)
+    except ValueError:
+        return None
+    if not target.exists():
+        return None
+    key = _file_cache_key(workspace, filepath)
+    mtime = target.stat().st_mtime
+    cached = _read_cache.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    content = target.read_text(encoding="utf-8")
+    _read_cache[key] = (mtime, content)
+    return content
 
 
 def get_scratchpad() -> dict[str, str]:
@@ -331,7 +365,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create or fully overwrite a file. Use only for initial implementation. For fixes use str_replace.",
+            "description": (
+                "Create or fully overwrite a file. Use for new files, large UI/HTML/CSS "
+                "revamps, or when str_replace keeps failing. For small fixes use str_replace."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -646,10 +683,12 @@ def find_files(workspace: Path, pattern: str) -> str:
 
 
 def read_file(workspace: Path, filepath: str) -> str:
-    target = _resolve_path(workspace, filepath)
-    if not target.exists():
-        return f"Error: {filepath} not found"
-    content = target.read_text(encoding="utf-8")
+    content = _cached_file_content(workspace, filepath)
+    if content is None:
+        target = _resolve_path(workspace, filepath)
+        if not target.exists():
+            return f"Error: {filepath} not found"
+        content = target.read_text(encoding="utf-8")
     lines = content.splitlines()
     numbered = "\n".join(f"{i+1:4d} | {line}" for i, line in enumerate(lines))
     return numbered or "(empty file)"
@@ -667,7 +706,9 @@ def read_files(workspace: Path, filepaths: list[str]) -> str:
         if not target.exists():
             results.append(f"### {fp}\nError: not found\n")
             continue
-        content = target.read_text(encoding="utf-8")
+        content = _cached_file_content(workspace, fp)
+        if content is None:
+            content = target.read_text(encoding="utf-8")
         lines = content.splitlines()
         numbered = "\n".join(f"{i+1:4d} | {line}" for i, line in enumerate(lines))
         results.append(f"### {fp}\n{numbered}\n")
@@ -839,6 +880,7 @@ def write_file(workspace: Path, filepath: str, content: str) -> str:
     target = _resolve_path(workspace, filepath)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    _invalidate_file_cache(workspace, filepath)
     return f"Wrote {len(content)} bytes to {filepath}"
 
 
@@ -954,6 +996,7 @@ def str_replace(workspace: Path, filepath: str, old_str: str, new_str: str) -> s
     exact = content.count(old_str)
     if exact == 1:
         target.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
+        _invalidate_file_cache(workspace, filepath)
         return (
             f"[EDIT:OK] Replaced 1 exact match in {filepath}. "
             f"Use git_diff to confirm — do not re-read the whole file."
@@ -974,6 +1017,7 @@ def str_replace(workspace: Path, filepath: str, old_str: str, new_str: str) -> s
                 f"no change was made. Provide a different new_str that fixes the bug."
             )
         target.write_text(new_content, encoding="utf-8")
+        _invalidate_file_cache(workspace, filepath)
         return (
             f"[EDIT:OK] Replaced 1 match in {filepath} (indentation normalized to the file). "
             f"Use git_diff to confirm — do not re-read the whole file."
@@ -1184,3 +1228,30 @@ def parse_tool_call_fallback(content: str | None) -> list[dict] | None:
             if isinstance(item, dict) and "name" in item
         ]
     return None
+
+
+# ── Chat mode tool subsets (smaller schemas = faster LLM calls) ─────────────
+
+_ASK_TOOL_NAMES = frozenset({
+    "list_files", "view_directory", "find_files", "explore_repo",
+    "read_file", "read_files", "view_file_range", "file_outline", "get_function",
+    "search_code", "search_codebase", "search_and_read",
+    "git_status", "git_diff", "git_log",
+    "read_scratchpad", "report_confidence",
+})
+
+_DEBUG_TOOL_NAMES = _ASK_TOOL_NAMES | frozenset({
+    "run_tests", "run_code", "run_command", "generate_test",
+    "write_file", "str_replace", "insert_at_line", "delete_lines",
+    "edit_and_verify", "edit_files", "search_and_replace_all",
+    "create_directory", "git_checkout_file",
+})
+
+
+def get_tools_for_chat(mode: str = "ask") -> list:
+    """Return tool schemas filtered by composer mode to reduce LLM payload."""
+    mode = (mode or "ask").lower()
+    if mode == "work":
+        return TOOL_SCHEMAS
+    allowed = _DEBUG_TOOL_NAMES if mode == "debug" else _ASK_TOOL_NAMES
+    return [s for s in TOOL_SCHEMAS if s["function"]["name"] in allowed]

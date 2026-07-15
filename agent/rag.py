@@ -295,6 +295,11 @@ def set_current_index(index: CodebaseIndex | None) -> None:
     _current_index = index
 
 
+def get_current_index() -> CodebaseIndex | None:
+    """Return the active codebase index, if any."""
+    return _current_index
+
+
 def search_codebase(workspace: Path, query: str) -> str:
     """
     Tool function: semantic search over the indexed codebase.

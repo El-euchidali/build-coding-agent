@@ -1,13 +1,16 @@
 import json
+import queue
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent.llm import chat, get_token_usage, reset_token_counter, trim_context, set_system_section
+from agent.llm import chat, chat_stream, get_token_usage, reset_token_counter, trim_context, set_system_section
 from agent.prompts import SYSTEM_PROMPT, TESTS_NOT_PASSED_NUDGE
-from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback
+from agent.tools import TOOL_SCHEMAS, execute_tool, parse_tool_call_fallback, get_tools_for_chat, reset_read_cache
 from agent.failure import classify_failure, tests_passed_in_history
-from agent.rag import CodebaseIndex, set_current_index
+from agent.rag import CodebaseIndex, get_current_index, set_current_index
 from agent.filesystem import FileSystem
 from agent.fsm import AgentState, STATE_TOOLS, get_tools_for_state, transition, detect_initial_state
 from agent.trajectory import Trajectory
@@ -34,8 +37,26 @@ _EDIT_TOOLS = frozenset({
     "search_and_replace_all", "insert_at_line", "delete_lines",
 })
 
+_WRITE_TOOLS = _EDIT_TOOLS | frozenset({
+    "write_file", "create_directory", "generate_test",
+    "git_commit", "git_checkout_file",
+})
+
+_EXPLORE_ONLY_TOOLS = frozenset({
+    "list_files", "view_directory", "find_files", "explore_repo",
+})
+
 # Turns without a successful source edit before we nudge the agent to commit.
 _EDIT_NUDGE_THRESHOLD = 6
+
+_rag_lock = threading.Lock()
+
+
+def _trim_context_in_place(messages: list[dict]) -> list[dict]:
+    trimmed = trim_context(messages)
+    if trimmed is not messages:
+        messages[:] = trimmed
+    return messages
 
 
 def _edit_succeeded(tool: str, result: str) -> bool:
@@ -125,8 +146,18 @@ You are working in: {workspace}
 - Use tools when you need information — do not guess file contents
 - For simple questions, call the relevant tool and answer based on the result
 - For coding tasks, work step by step: read → understand → fix → verify
+- Prefer read_files over multiple read_file calls when you need several files
+- Call multiple read/search tools in ONE response when possible (parallel tool calls)
+- Do not repeat list_files or explore_repo once you already know the layout
+- Avoid write_scratchpad unless the task requires many rounds of planning
 - If you are unsure, ask the user for clarification
 - Keep responses concise but informative
+
+## Editing files
+- For **large changes** (UI revamps, full HTML/CSS rewrites, restructuring a file): read the file once, then use `write_file` with the complete new content.
+- For **small surgical fixes**: use `str_replace` — `old_str` must match the file exactly (whitespace and indentation included).
+- If `str_replace` returns `[EDIT:FAILED]`, do NOT guess again. Use `view_file_range` to copy the exact lines shown, or switch to `write_file` for broad changes.
+- After a successful edit, use `git_diff` to verify — do not re-read the whole file.
 
 ## Available tools
 You have access to tools for file reading, searching, editing, code execution, and git.
@@ -204,6 +235,25 @@ def _get_tool_calls(message) -> list[dict]:
     return []
 
 
+_TOOL_RESULT_DEFAULT_CAP = 3500
+_TOOL_RESULT_READ_CAP = 20000
+_EDIT_RESULT_PREFIXES = ("[EDIT:FAILED]", "[EDIT:AMBIGUOUS]", "[EDIT:NOOP]", "[EDIT:OK]")
+_READ_CAP_TOOLS = frozenset({
+    "read_file", "read_files", "view_file_range", "get_function", "file_outline",
+})
+
+
+def _cap_tool_result(content: str, tool_name: str = "") -> str:
+    """Truncate large tool output before it enters LLM context."""
+    if any(content.startswith(p) for p in _EDIT_RESULT_PREFIXES):
+        return content
+    cap = _TOOL_RESULT_READ_CAP if tool_name in _READ_CAP_TOOLS else _TOOL_RESULT_DEFAULT_CAP
+    if len(content) <= cap:
+        return content
+    hint = " Use view_file_range for specific sections." if tool_name in _READ_CAP_TOOLS else ""
+    return content[:cap] + f"\n… [truncated — {len(content):,} chars total].{hint}"
+
+
 def _plan_tool_calls(tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
     """Parallel reads allowed; at most one write per turn."""
     if len(tool_calls) <= 1:
@@ -236,18 +286,41 @@ def _execute_tool_turn(
     elapsed_by_id: dict[str, float] = {}
     history: list[ToolCall] = []
 
-    for tc in to_execute:
+    def run_one(tc: dict) -> tuple[dict, str, float]:
         args = _parse_tool_args(tc)
         tool_start = time.time()
         result = execute_tool(tc["name"], args, workspace)
-        tool_elapsed = round(time.time() - tool_start, 1)
+        return tc, result, round(time.time() - tool_start, 1)
+
+    reads = [tc for tc in to_execute if tc["name"] in _READ_TOOLS]
+    writes = [tc for tc in to_execute if tc["name"] not in _READ_TOOLS]
+
+    if len(reads) > 1:
+        with ThreadPoolExecutor(max_workers=min(6, len(reads))) as pool:
+            for tc, result, tool_elapsed in pool.map(run_one, reads):
+                results_by_id[tc["id"]] = result
+                elapsed_by_id[tc["id"]] = tool_elapsed
+                history.append(ToolCall(
+                    name=tc["name"], args=_parse_tool_args(tc),
+                    result=result[:800], elapsed=tool_elapsed,
+                ))
+    else:
+        for tc in reads:
+            tc, result, tool_elapsed = run_one(tc)
+            results_by_id[tc["id"]] = result
+            elapsed_by_id[tc["id"]] = tool_elapsed
+            history.append(ToolCall(
+                name=tc["name"], args=_parse_tool_args(tc),
+                result=result[:800], elapsed=tool_elapsed,
+            ))
+
+    for tc in writes:
+        tc, result, tool_elapsed = run_one(tc)
         results_by_id[tc["id"]] = result
         elapsed_by_id[tc["id"]] = tool_elapsed
         history.append(ToolCall(
-            name=tc["name"],
-            args=args,
-            result=result[:800],
-            elapsed=tool_elapsed,
+            name=tc["name"], args=_parse_tool_args(tc),
+            result=result[:800], elapsed=tool_elapsed,
         ))
 
     tool_messages = []
@@ -259,7 +332,7 @@ def _execute_tool_turn(
         tool_messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
-            "content": content,
+            "content": _cap_tool_result(content, tc["name"]),
         })
 
     return tool_messages, history, elapsed_by_id
@@ -283,38 +356,201 @@ def _finalize_result(
     return result
 
 
+def _normalize_tool_result_for_loop(content: str) -> str:
+    """Collapse similar failure messages so loop detection catches retry spirals."""
+    if content.startswith("[EDIT:FAILED]"):
+        return "[EDIT:FAILED]"
+    if content.startswith("[EDIT:AMBIGUOUS]"):
+        return "[EDIT:AMBIGUOUS]"
+    if content.startswith("[EDIT:NOOP]"):
+        return "[EDIT:NOOP]"
+    return content[:100]
+
+
 def _detect_loop(messages: list[dict], window: int = 3) -> bool:
     """Detect if the last N tool results contain the same error."""
     recent = []
     for msg in reversed(messages):
         if msg.get("role") == "tool":
-            recent.append(msg["content"][:100])
+            recent.append(_normalize_tool_result_for_loop(msg["content"]))
         if len(recent) >= window:
             break
     return len(recent) == window and len(set(recent)) == 1
+
+
+def _edit_failure_filepath(content: str) -> str | None:
+    import re
+    match = re.search(r" in ([^\s\n]+\.\w+)", content)
+    return match.group(1) if match else None
+
+
+def _edit_failure_nudge(messages: list[dict]) -> str | None:
+    """Nudge the model when str_replace keeps failing on the same file."""
+    failures: list[str] = []
+    for msg in reversed(messages):
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content", "")
+        if not content.startswith(("[EDIT:FAILED]", "[EDIT:AMBIGUOUS]")):
+            break
+        fp = _edit_failure_filepath(content) or "the file"
+        failures.append(fp)
+        if len(failures) >= 2:
+            break
+    if len(failures) < 2:
+        return None
+
+    filepath = failures[0]
+    html_like = filepath.endswith((".html", ".htm", ".jinja", ".j2", ".tpl", ".css"))
+    if html_like or len(failures) >= 3:
+        return (
+            f"str_replace failed repeatedly on {filepath}. "
+            "This looks like a large change — read the file once, then use write_file "
+            "with the full updated content. Do not keep guessing old_str."
+        )
+    return (
+        f"str_replace failed repeatedly on {filepath}. "
+        "Use view_file_range to copy the exact lines into old_str, "
+        "or use write_file if the change spans most of the file."
+    )
+
+
+def _recent_nudge_already(messages: list[dict], prefix: str) -> bool:
+    for msg in reversed(messages[-4:]):
+        if msg.get("role") == "user" and str(msg.get("content", "")).startswith(prefix):
+            return True
+    return False
+
+
+def _has_write_tools_in_history(messages: list[dict]) -> bool:
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            name = tc.get("function", {}).get("name", "")
+            if name in _WRITE_TOOLS:
+                return True
+    return False
+
+
+def _recent_explore_loops(messages: list[dict], window: int = 3) -> bool:
+    """True when the last N tool rounds were only directory exploration."""
+    recent: list[str] = []
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        for tc in msg["tool_calls"]:
+            recent.append(tc.get("function", {}).get("name", ""))
+        if len(recent) >= window:
+            break
+    return len(recent) >= window and all(t in _EXPLORE_ONLY_TOOLS for t in recent[:window])
+
+
+def _iter_llm_blocking_with_heartbeats(
+    messages: list[dict],
+    tools: list,
+    *,
+    use_light: bool = False,
+    temperature: float | None = None,
+):
+    """Blocking LLM call with heartbeats — used by CLI and non-streaming paths."""
+    result_q: queue.Queue = queue.Queue()
+
+    def runner() -> None:
+        try:
+            result_q.put(("ok", chat(messages, tools=tools, use_light=use_light, temperature=temperature)))
+        except Exception as e:
+            result_q.put(("err", e))
+
+    threading.Thread(target=runner, daemon=True, name="llm-call").start()
+    start = time.time()
+    while True:
+        try:
+            kind, payload = result_q.get(timeout=3.0)
+            elapsed = round(time.time() - start, 1)
+            if kind == "ok":
+                yield ("result", payload, elapsed)
+            else:
+                yield ("error", payload, elapsed)
+            return
+        except queue.Empty:
+            yield ("heartbeat", round(time.time() - start, 1))
+
+
+def _iter_llm_stream_for_ui(
+    messages: list[dict],
+    tools: list,
+    *,
+    use_light: bool = False,
+    temperature: float | None = None,
+):
+    """
+    UI-only: stream LLM tokens to the browser while waiting.
+    Yields ('heartbeat', elapsed), ('token', chunk), ('result', message, elapsed),
+    or ('error', exception, elapsed).
+    """
+    event_q: queue.Queue = queue.Queue()
+
+    def runner() -> None:
+        try:
+            for item in chat_stream(messages, tools=tools, use_light=use_light, temperature=temperature):
+                event_q.put(item)
+        except Exception as e:
+            event_q.put(("error", e))
+
+    threading.Thread(target=runner, daemon=True, name="llm-stream").start()
+    start = time.time()
+    while True:
+        try:
+            item = event_q.get(timeout=3.0)
+        except queue.Empty:
+            yield ("heartbeat", round(time.time() - start, 1))
+            continue
+        if item[0] == "token":
+            yield item
+            continue
+        if item[0] == "done":
+            yield ("result", item[1], round(time.time() - start, 1))
+            return
+        if item[0] == "error":
+            yield ("error", item[1], round(time.time() - start, 1))
+            return
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Conversational mode — for the UI
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_conversation(workspace: Path) -> list[dict]:
-    """Initialize a new conversation with system prompt and RAG index."""
+def init_conversation(workspace: Path, *, build_rag: bool = True) -> list[dict]:
+    """Initialize a new conversation with system prompt and optional RAG index."""
     reset_scratchpad()
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Build RAG index if codebase is large enough
-    fs = FileSystem(workspace)
-    py_files = [f for f in fs.tracked_files("*.py")]
-    if len(py_files) > 3:
-        index = CodebaseIndex(workspace)
-        chunks = index.build()
-        set_current_index(index)
+    if build_rag:
+        _ensure_rag_index(workspace)
     else:
         set_current_index(None)
 
     prompt = CONVERSATIONAL_PROMPT.format(workspace=workspace.resolve())
     return [{"role": "system", "content": prompt}]
+
+
+def _ensure_rag_index(workspace: Path) -> None:
+    """Build the RAG index if the codebase is large enough."""
+    with _rag_lock:
+        if get_current_index() is not None:
+            return
+        fs = FileSystem(workspace)
+        py_files = [f for f in fs.tracked_files("*.py")]
+        if len(py_files) > 3:
+            index = CodebaseIndex(workspace)
+            index.build()
+            set_current_index(index)
+        else:
+            set_current_index(None)
+
+
+def warm_rag_index(workspace: Path) -> None:
+    """Pre-build the RAG index (safe to call from a background thread)."""
+    _ensure_rag_index(workspace)
 
 
 def handle_message(
@@ -336,7 +572,7 @@ def handle_message(
 
     # Add user message
     messages.append({"role": "user", "content": user_message})
-    messages = trim_context(messages)
+    messages = _trim_context_in_place(messages)
 
     tool_history: list[ToolCall] = []
 
@@ -378,6 +614,8 @@ def handle_message_streaming(
     messages: list[dict],
     workspace: Path,
     max_tool_rounds: int = 30,
+    composer_mode: str = "ask",
+    stream: bool = False,
 ):
     """
     Streaming version of handle_message.
@@ -385,43 +623,116 @@ def handle_message_streaming(
     Returns updated messages list via the final event.
     """
     reset_token_counter()
+    reset_read_cache()
 
-    # Add user message
+    mode = (composer_mode or "ask").lower()
+    if mode == "ask":
+        max_tool_rounds = min(max_tool_rounds, 14)
+    elif mode == "debug":
+        max_tool_rounds = min(max_tool_rounds, 28)
+
+    chat_tools = get_tools_for_chat(mode)
+
+    if get_current_index() is None:
+        fs = FileSystem(workspace)
+        py_count = sum(1 for f in fs.tracked_files("*.py"))
+        if py_count > 3:
+            yield {"type": "status", "content": "Building search index…"}
+            _ensure_rag_index(workspace)
+            yield {"type": "rag", "info": f"Indexed {py_count} Python files"}
+
     messages.append({"role": "user", "content": user_message})
-    messages = trim_context(messages)
-    # Inject scratchpad so it survives context trimming
+    messages = trim_context(messages, max_tokens=36000, keep_recent=16)
     scratchpad = get_scratchpad()
     if scratchpad:
         pad_content = "## Your Scratchpad Notes\n"
         for key, value in scratchpad.items():
             pad_content += f"### {key}\n{value}\n\n"
-        messages = set_system_section(messages, "## Your Scratchpad Notes", pad_content)
+        messages[:] = set_system_section(messages, "## Your Scratchpad Notes", pad_content)
+
+    use_light = mode == "ask" or not _has_write_tools_in_history(messages)
+    temperature = 0.0 if mode in ("work", "debug") else None
 
     for round_num in range(max_tool_rounds):
-        start_time = time.time()
+        messages = _trim_context_in_place(messages)
 
-        message = chat(messages, tools=TOOL_SCHEMAS)
-        elapsed = round(time.time() - start_time, 1)
+        if _recent_explore_loops(messages):
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You have already explored the directory structure. "
+                    "Read specific files with read_file/read_files or answer the user."
+                ),
+            })
+
+        if _detect_loop(messages):
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The same edit approach failed repeatedly. For large UI/HTML changes, "
+                    "use write_file with the full new file content. For small fixes, "
+                    "use view_file_range to copy exact lines into old_str. "
+                    "If stuck, summarize progress and ask the user."
+                ),
+            })
+
+        edit_nudge = _edit_failure_nudge(messages)
+        if edit_nudge and not _recent_nudge_already(messages, "str_replace failed"):
+            messages.append({"role": "user", "content": edit_nudge})
+
+        message = None
+        elapsed = 0.0
+        stream_open = False
+        llm_iter = (
+            _iter_llm_stream_for_ui(messages, chat_tools, use_light=use_light, temperature=temperature)
+            if stream
+            else _iter_llm_blocking_with_heartbeats(messages, chat_tools, use_light=use_light, temperature=temperature)
+        )
+        for event in llm_iter:
+            if event[0] == "heartbeat":
+                yield {"type": "heartbeat", "elapsed": event[1], "round": round_num + 1}
+                continue
+            if stream and event[0] == "token":
+                if not stream_open:
+                    stream_open = True
+                    yield {"type": "response_start"}
+                yield {"type": "token", "content": event[1]}
+                continue
+            if event[0] == "error":
+                err = event[1]
+                hint = ""
+                if "timed out" in str(err).lower():
+                    hint = " Try increasing INNKUBE_TIMEOUT (default 300s)."
+                raise RuntimeError(f"{err}{hint}") from err
+            message = event[1]
+            elapsed = event[2]
 
         messages.append(_assistant_message_dict(message))
-
         tool_calls = _get_tool_calls(message)
 
-        # No tool calls — final text response
         if not tool_calls:
-            yield {
-                "type": "response",
-                "content": message.content or "",
-                "tokens": get_token_usage(),
-                "elapsed": elapsed,
-            }
+            if stream and stream_open:
+                yield {
+                    "type": "response_end",
+                    "content": message.content or "",
+                    "tokens": get_token_usage(),
+                    "elapsed": elapsed,
+                }
+            else:
+                yield {
+                    "type": "response",
+                    "content": message.content or "",
+                    "tokens": get_token_usage(),
+                    "elapsed": elapsed,
+                }
             return
 
+        if stream and stream_open:
+            yield {"type": "stream_discard", "content": message.content or ""}
+            stream_open = False
+
         if message.content:
-            yield {
-                "type": "thinking",
-                "content": message.content,
-            }
+            yield {"type": "thinking", "content": message.content}
 
         tool_messages, _, elapsed_by_id = _execute_tool_turn(tool_calls, workspace)
         for tc, msg in zip(tool_calls, tool_messages):
@@ -436,8 +747,9 @@ def handle_message_streaming(
                 "tokens": get_token_usage(),
             }
         messages.extend(tool_messages)
+        messages = _trim_context_in_place(messages)
+        use_light = mode == "ask" or not _has_write_tools_in_history(messages)
 
-    # Max rounds
     yield {
         "type": "response",
         "content": "I reached the maximum number of tool calls. Let me know if you want me to continue.",

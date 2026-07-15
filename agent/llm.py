@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from types import SimpleNamespace
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -68,7 +69,8 @@ def get_client() -> OpenAI:
     base_url = os.environ.get(
         "INNKUBE_BASE_URL", "https://llms.innkube.fim.uni-passau.de"
     )
-    return OpenAI(api_key=api_key, base_url=base_url)
+    timeout = float(os.environ.get("INNKUBE_TIMEOUT", "600"))
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
 
 def reset_token_counter() -> None:
@@ -198,8 +200,9 @@ def chat(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
+    max_attempts = max(1, int(os.environ.get("INNKUBE_RETRIES", "3")))
     last_error = None
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         try:
             response = client.chat.completions.create(**kwargs)
 
@@ -213,13 +216,150 @@ def chat(
         except Exception as e:
             last_error = e
             error_str = str(e)
+            error_lower = error_str.lower()
             # Retry on transient errors (rate limit, server error, timeout)
-            if any(code in error_str for code in ["429", "500", "502", "503", "timeout", "Connection"]):
+            transient = any(
+                marker in error_lower
+                for marker in [
+                    "429",
+                    "500",
+                    "502",
+                    "503",
+                    "timeout",
+                    "timed out",
+                    "connection",
+                    "temporarily unavailable",
+                ]
+            )
+            if transient and attempt < max_attempts - 1:
                 wait = (attempt + 1) * 5
-                print(f"  [LLM] Retry {attempt + 1}/3 after {wait}s — {type(e).__name__}: {error_str[:100]}")
+                print(f"  [LLM] Retry {attempt + 1}/{max_attempts} after {wait}s — {type(e).__name__}: {error_str[:100]}")
                 time.sleep(wait)
                 continue
             # Non-transient error — raise immediately
+            raise
+
+    raise last_error
+
+
+def _build_stream_message(content_parts: list[str], tool_calls_acc: dict[int, dict]):
+    """Assemble a message object compatible with agent._get_tool_calls."""
+    tool_calls_list = None
+    if tool_calls_acc:
+        tool_calls_list = []
+        for idx in sorted(tool_calls_acc):
+            tc = tool_calls_acc[idx]
+            tool_calls_list.append(
+                SimpleNamespace(
+                    id=tc["id"] or f"call_{idx}",
+                    function=SimpleNamespace(
+                        name=tc["name"],
+                        arguments=tc["arguments"],
+                    ),
+                )
+            )
+    text = "".join(content_parts)
+    return SimpleNamespace(content=text or None, tool_calls=tool_calls_list)
+
+
+def chat_stream(
+    messages: list[dict],
+    tools: list | None = None,
+    use_light: bool = False,
+    temperature: float | None = None,
+):
+    """
+    Streaming chat for the UI only. Yields ('token', str) chunks, then ('done', message).
+    Does not affect the blocking chat() used by benchmarks and evaluators.
+    """
+    client = get_client()
+    model = os.environ.get("INNKUBE_MODEL", "gemma4-31b-it")
+    if use_light:
+        light_model = os.environ.get("INNKUBE_MODEL_LIGHT", "")
+        if light_model:
+            model = light_model
+
+    messages = consolidate_system_messages(messages)
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    max_attempts = max(1, int(os.environ.get("INNKUBE_RETRIES", "3")))
+    last_error = None
+    for attempt in range(max_attempts):
+        content_parts: list[str] = []
+        tool_calls_acc: dict[int, dict] = {}
+        got_usage = False
+        try:
+            try:
+                stream = client.chat.completions.create(**kwargs)
+            except TypeError:
+                kwargs.pop("stream_options", None)
+                stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                usage = getattr(chunk, "usage", None)
+                if usage and (usage.total_tokens or usage.prompt_tokens or usage.completion_tokens):
+                    got_usage = True
+                    _total_tokens["prompt"] += usage.prompt_tokens or 0
+                    _total_tokens["completion"] += usage.completion_tokens or 0
+                    _total_tokens["total"] += usage.total_tokens or 0
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield ("token", delta.content)
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        if tc.id:
+                            tool_calls_acc[idx]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_acc[idx]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_acc[idx]["arguments"] += tc.function.arguments
+            if not got_usage:
+                response_text = "".join(content_parts)
+                prompt_est = count_tokens(messages)
+                completion_est = count_tokens([{"content": response_text}]) if response_text else 0
+                _total_tokens["prompt"] += prompt_est
+                _total_tokens["completion"] += completion_est
+                _total_tokens["total"] += prompt_est + completion_est
+            yield ("done", _build_stream_message(content_parts, tool_calls_acc))
+            return
+        except Exception as e:
+            last_error = e
+            error_lower = str(e).lower()
+            transient = any(
+                marker in error_lower
+                for marker in (
+                    "429", "500", "502", "503", "timeout", "timed out",
+                    "connection", "temporarily unavailable",
+                )
+            )
+            if transient and attempt < max_attempts - 1:
+                wait = (attempt + 1) * 5
+                print(
+                    f"  [LLM stream] Retry {attempt + 1}/{max_attempts} after {wait}s — "
+                    f"{type(e).__name__}: {str(e)[:100]}"
+                )
+                time.sleep(wait)
+                continue
             raise
 
     raise last_error
