@@ -124,14 +124,22 @@ python main.py --swebench --no-eval --max-iterations 30     # full 500-task run
 
 Results are saved after every task, so a rerun resumes automatically and skips completed instance IDs. The published runs used `--max-iterations 30` explicitly (the CLI default is 20).
 
-**Official evaluation** (WSL/Linux + Docker):
+**Official evaluation** (WSL/Linux + Docker) is not a separate command — it runs at the end of `--swebench` unless you pass `--no-eval`:
 
 ```bash
-python main.py --swebench-eval --predictions results/PREDICTIONS.jsonl
+python main.py --swebench --max-iterations 30
 # between batches, reclaim disk: docker system prune -a -f
 ```
 
-Evaluating in per-repository batches keeps Docker image usage manageable on a laptop.
+Every run uses the fixed run id `swebench_run`, which is what makes resume work. It writes:
+
+| Path                                              | Contents                                          |
+| ------------------------------------------------- | ------------------------------------------------- |
+| `results/swebench_predictions_swebench_run.jsonl` | patches in the evaluator's input format           |
+| `results/swebench_agent_swebench_run.json`        | per-task tokens, iterations, and stop reasons     |
+| `swebench_run.coding-agent-fsm.json`              | the official evaluator's report (written to CWD)  |
+
+Evaluating in per-repository batches — `--instance-ids <id> <id> …` — keeps Docker image usage manageable on a laptop. There is no CLI flag for evaluating an existing predictions file on its own; call `run_official_evaluation()` in `evaluation/swebench_runner.py` directly if you need that.
 
 ## Tools (33)
 
@@ -170,6 +178,10 @@ The FSM exposes only a state-specific subset on each turn, so an individual API 
 ## Project Structure
 
 ```
+main.py                # CLI entry point: smoke test + all benchmarks
+demo.py                # Scripted HumanEval walkthrough
+ai_documentation.md    # AI usage log (20 entries, per-commit provenance)
+requirements.txt
 agent/
 ├── agent.py           # Core engine: handle_message + run_task
 ├── filesystem.py      # FileSystem foundation (git ls-files)
@@ -178,29 +190,48 @@ agent/
 ├── rag.py             # RAG index (ChromaDB + sentence-transformers)
 ├── llm.py             # LLM API client
 ├── prompts.py         # System prompts
+├── history.py         # Conversation persistence for CLI and UI
 ├── failure.py         # Failure classification
 ├── trajectory.py      # Trajectory logging
 ├── reflexion.py       # Reflexion — learn from failures
-├── cli.py             # Terminal chat interface
+└── cli.py             # Terminal chat interface
 execution/
 ├── sandbox.py         # Sandboxed code execution
-├── output_format.py   # Test output formatting
+└── output_format.py   # Test output formatting
 evaluation/
 ├── humaneval_runner.py # HumanEval benchmark
 ├── swebench_runner.py  # SWE-bench Verified benchmark
 ├── runner.py           # Custom benchmark runner
 ├── metrics.py          # Evaluation metrics
+└── tasks/
+    └── benchmark.json  # Custom benchmark task definitions
 ui/
-├── app.py             # FastAPI backend (REST + WebSocket + static)
+├── app.py             # FastAPI backend (REST + SSE + WebSocket + static)
 ├── session.py         # Workspace session + path validation
+├── chat_runs.py       # Resumable chat runs behind the SSE stream
 ├── terminal.py        # PTY manager for Xterm.js
 └── frontend/          # Vite + TypeScript IDE frontend
     ├── src/
-    │   ├── components/  # pathPicker, fileTree, terminal, chat
-    │   └── main.ts
+    │   ├── main.ts      # Bootstrap, layout wiring, workspace open
+    │   ├── api.ts       # Backend client
+    │   ├── types.ts     # Shared response types
+    │   ├── markdown.ts  # Message rendering
+    │   ├── layout.css   # IDE styling
+    │   └── components/  # pathPicker, fileTree, terminal, chat
     └── dist/          # Built assets (after npm run build)
 docs/
 ├── failure_analysis.md # HumanEval failure analysis
+└── progress_report.md  # Project progress report
+```
+
+Created at runtime and gitignored, so they are absent from a fresh clone:
+
+```
+logs/            # trajectory_{task_id}_{timestamp}.json — one per agent run
+reflections/     # reflection_{timestamp}.json — failure notes replayed on later tasks
+results/         # benchmark metrics, SWE-bench predictions and agent reports
+workspace/       # per-task scratch checkouts created by the benchmark runners
+.agent_history/  # saved conversations — written inside each opened workspace
 ```
 
 ## LLM
