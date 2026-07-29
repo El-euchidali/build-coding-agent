@@ -1,5 +1,5 @@
 import "./layout.css";
-import { fetchGitDiff, fetchWorkspaceTree, openWorkspace } from "./api";
+import { ensureTerminal, fetchGitDiff, fetchWorkspaceTree, openWorkspace } from "./api";
 import { createChatPanel } from "./components/chat";
 import { createFileTree } from "./components/fileTree";
 import { createPathPicker } from "./components/pathPicker";
@@ -220,7 +220,13 @@ const fileTree = createFileTree(fileTreeEl, {
   onFileSelect: (path, content) => showFile(path, content),
 });
 
-const terminal = createTerminal(terminalContainer);
+const terminal = createTerminal(terminalContainer, {
+  onBeforeReconnect: async () => {
+    if (!currentWorkspace) return;
+    const data = await ensureTerminal(currentWorkspace);
+    currentTerminalWs = data.terminal_ws;
+  },
+});
 
 async function refreshFileTree() {
   if (!currentWorkspace) return;
