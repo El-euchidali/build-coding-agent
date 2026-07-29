@@ -7,6 +7,7 @@ Open: http://localhost:8000
 from contextlib import asynccontextmanager
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from ui.session import (
     browse_directory,
     build_tree,
     get_chat_session,
+    get_session_workspace,
     list_tree_children,
     open_workspace,
     register_chat_session,
@@ -190,6 +192,33 @@ async def open_workspace_endpoint(request: Request):
         "tree": build_tree(fs),
         "terminal_ws": f"/ws/terminal?session_id={session_id}",
         "total_files": len(list(fs.tracked_files())),
+    }
+
+
+@app.post("/api/terminal/ensure")
+async def ensure_terminal_endpoint(request: Request):
+    """Respawn the PTY after a server reload or dropped connection."""
+    body = await request.json()
+    session_id = body.get("session_id", "default")
+    workspace = body.get("workspace", "")
+    if not workspace:
+        workspace_path = get_session_workspace(session_id)
+        if not workspace_path:
+            return JSONResponse({"error": "workspace is required"}, status_code=400)
+    else:
+        try:
+            workspace_path = validate_workspace(workspace)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+    try:
+        await asyncio.to_thread(pty_manager.respawn_sync, session_id, workspace_path)
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to start terminal: {e}"}, status_code=500)
+
+    return {
+        "terminal_ws": f"/ws/terminal?session_id={session_id}",
+        "workspace": str(workspace_path),
     }
 
 
@@ -482,6 +511,33 @@ if FRONTEND_DIST.exists():
 
 
 if __name__ == "__main__":
+    import sys
+
     import uvicorn
 
-    uvicorn.run("ui.app:app", host="0.0.0.0", port=8000, reload=True)
+    # Hot reload is disabled on Windows by default: pip installs into venv and
+    # other file churn were restarting the server and killing terminal sessions.
+    root = Path(__file__).resolve().parent.parent
+    reload_flag = os.environ.get("CODING_AGENT_RELOAD", "").strip().lower()
+    if reload_flag in ("1", "true", "yes", "on"):
+        reload = True
+    elif reload_flag in ("0", "false", "no", "off"):
+        reload = False
+    else:
+        reload = sys.platform != "win32"
+
+    kwargs: dict = {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "reload": reload,
+    }
+    if reload:
+        kwargs["reload_dirs"] = [str(root / "ui"), str(root / "agent")]
+        kwargs["reload_excludes"] = [
+            str(root / "venv"),
+            str(root / "node_modules"),
+            str(root / ".git"),
+            str(root / ".agent_history"),
+        ]
+
+    uvicorn.run("ui.app:app", **kwargs)

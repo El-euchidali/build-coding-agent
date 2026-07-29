@@ -76,6 +76,19 @@ export async function openWorkspace(path: string): Promise<OpenWorkspaceResponse
   return res.json();
 }
 
+export async function ensureTerminal(workspace: string): Promise<{ terminal_ws: string }> {
+  const res = await fetch("/api/terminal/ensure", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace, session_id: getSessionId() }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || "Failed to restart terminal");
+  }
+  return res.json();
+}
+
 export async function fetchFile(path: string, workspace: string): Promise<FileContent | null> {
   const url =
     "/api/file?path=" +

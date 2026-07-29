@@ -5,8 +5,11 @@ import "@xterm/xterm/css/xterm.css";
 
 const encoder = new TextEncoder();
 
-export function createTerminal(container: HTMLElement): {
-  connect: (wsPath: string, opts?: { reset?: boolean }) => void;
+export function createTerminal(
+  container: HTMLElement,
+  opts?: { onBeforeReconnect?: () => Promise<void> },
+): {
+  connect: (wsPath: string, options?: { reset?: boolean }) => void;
   disconnect: (clearPath?: boolean) => void;
   fit: () => void;
 } {
@@ -105,9 +108,19 @@ export function createTerminal(container: HTMLElement): {
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
         term.write(new Uint8Array(ev.data));
-      } else {
-        term.write(String(ev.data));
+        return;
       }
+      const text = String(ev.data);
+      try {
+        const msg = JSON.parse(text) as { type?: string; message?: string };
+        if (msg?.type === "info" && msg.message) {
+          term.writeln(`\x1b[33m${msg.message}\x1b[0m`);
+          return;
+        }
+      } catch {
+        // plain terminal text
+      }
+      term.write(text);
     };
 
     ws.onclose = () => {
@@ -122,7 +135,14 @@ export function createTerminal(container: HTMLElement): {
       const delay = Math.min(1000 * reconnectAttempts, 5000);
       term.writeln(`\r\n\x1b[33mTerminal disconnected. Reconnecting in ${Math.round(delay / 1000)}s…\x1b[0m`);
       reconnectTimer = window.setTimeout(() => {
-        if (currentWsPath) connect(currentWsPath);
+        void (async () => {
+          try {
+            await opts?.onBeforeReconnect?.();
+          } catch {
+            // best effort — reconnect anyway
+          }
+          if (currentWsPath) connect(currentWsPath);
+        })();
       }, delay);
     };
 

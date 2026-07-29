@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from dataclasses import dataclass, field
@@ -25,6 +26,54 @@ class WorkspaceSession:
 
 _browser_sessions: dict[str, WorkspaceSession] = {}
 _chat_sessions: dict[str, dict] = {}
+_persist_lock = threading.Lock()
+
+
+def _sessions_store_path() -> Path:
+    root = Path(__file__).resolve().parent.parent
+    store_dir = root / ".agent_history"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    return store_dir / "ui_browser_sessions.json"
+
+
+def _persist_browser_sessions() -> None:
+    payload = {
+        sid: {
+            "workspace": str(session.workspace),
+            "conversation_id": session.conversation_id,
+        }
+        for sid, session in _browser_sessions.items()
+    }
+    path = _sessions_store_path()
+    with _persist_lock:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_browser_sessions() -> None:
+    path = _sessions_store_path()
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(payload, dict):
+        return
+    for session_id, data in payload.items():
+        if session_id in _browser_sessions or not isinstance(data, dict):
+            continue
+        workspace_raw = data.get("workspace")
+        if not workspace_raw:
+            continue
+        workspace = Path(workspace_raw)
+        if not workspace.exists():
+            continue
+        _browser_sessions[session_id] = WorkspaceSession(
+            session_id=session_id,
+            workspace=workspace.resolve(),
+            conversation_id=str(data.get("conversation_id", "")),
+            messages=[],
+        )
 
 
 def _allowed_roots() -> list[Path]:
@@ -232,11 +281,21 @@ def open_workspace(session_id: str, raw_path: str) -> WorkspaceSession:
         name="rag-warm",
     ).start()
 
+    _persist_browser_sessions()
     return session
 
 
 def get_browser_session(session_id: str) -> WorkspaceSession | None:
+    if session_id not in _browser_sessions:
+        _load_browser_sessions()
     return _browser_sessions.get(session_id)
+
+
+def get_session_workspace(session_id: str) -> Path | None:
+    session = get_browser_session(session_id)
+    if session:
+        return session.workspace
+    return None
 
 
 def get_chat_session(conversation_id: str) -> dict | None:
