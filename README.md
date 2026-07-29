@@ -4,10 +4,16 @@ An autonomous Python coding agent that navigates codebases, fixes bugs, writes c
 
 ## Results
 
-| Benchmark              | Score           | Details                                                           |
-| ---------------------- | --------------- | ----------------------------------------------------------------- |
-| **HumanEval**          | 96.3% (158/164) | 6 failures are genuine edge cases                                 |
-| **SWE-bench Verified** | 1/1 confirmed   | Correct patch for astropy — verified by official Docker evaluator |
+All SWE-bench numbers below come from the **official SWE-bench Docker evaluator**, not from the agent's own test runs.
+
+| Benchmark                    | Model / config           | Patches | Resolved | Score                          |
+| ---------------------------- | ------------------------ | ------- | -------- | ------------------------------ |
+| **HumanEval** (164)          | gemma4-31b-it            | —       | 158/164  | **96.3%** (avg 2.0 iterations) |
+| **SWE-bench Verified** (500) | gemma4-31b-it, pre-guard | 344     | 161/500  | 32.2% (precision 46.8%)        |
+| **SWE-bench Verified** (500) | gemma4-31b-it, final     | 403     | 185/500  | **37.0%** (precision 45.9%)    |
+| **SWE-bench Verified** (500) | qwen36-35b, final        | 313     | 173/500  | 34.6% (precision **55.3%**)    |
+
+Token cost across the three full runs: 168M → 88M for the same model once the guard set was added, and 115M for Qwen. Precision is resolved ÷ non-empty patches. All runs used identical tasks, budgets, and evaluator.
 
 ### Finite State Machine
 
@@ -17,7 +23,14 @@ The agent follows a structured workflow instead of free-form tool use:
 PLAN → EXPLORE → IMPLEMENT → VERIFY → FIX → DONE
 ```
 
-Each state restricts which tools are available, preventing the LLM from skipping steps or making premature changes. The agent can also request state transitions via the `request_transition` tool when it needs more exploration or wants to re-plan.
+Each state restricts which tools are available, preventing the LLM from skipping steps or making premature changes. Enforcement is mechanical: only the schemas legal in the current state are sent with each API call.
+
+Transitions happen two ways:
+
+- **Event-driven** (in code): a `run_tests` result of `[TEST_RESULT:PASS]` moves the agent to `DONE` from any state that exposes test execution; a failing run moves it to `FIX`; a completed edit forces re-verification; sustained searching pushes toward `IMPLEMENT`.
+- **Model-requested**: `request_transition` is validated against the allowed map — an invalid target returns an error observation and the state does not change (e.g. `FIX → EXPLORE` when the original hypothesis was wrong).
+
+The **entry state is detected**, not hardcoded: `detect_initial_state()` inspects the workspace once — more than 10 Python files → `PLAN`; a small workspace → `EXPLORE`; an existing `solution.py` → `IMPLEMENT` if it is a stub, `VERIFY` if it already contains real code. On SWE-bench this always resolves to `PLAN`; on HumanEval it saves 2–3 iterations per task.
 
 ## Setup
 
@@ -72,7 +85,8 @@ python -m ui.app
 # Open http://localhost:8000
 ```
 
-Enter a project path (existing or new — missing folders are created on open), or click **Browse…** to pick a folder. Clicking **Open** simultaneously:
+On load the UI automatically opens the directory the server was launched from. To work somewhere else, enter a project path (existing or new — missing folders are created on open) or click **Browse…** to pick a folder. Opening a workspace simultaneously:
+
 - Initializes the coding harness (`init_conversation`) in that directory
 - Spawns a shell with CWD set to that path (Python PTY over WebSocket)
 - Loads the file tree for the workspace
@@ -100,14 +114,26 @@ python main.py --task 001
 
 # HumanEval
 python main.py --humaneval --limit 5
-python main.py --humaneval                    # all 164
+python main.py --humaneval                                  # all 164
 
-# SWE-bench Verified
-python main.py --swebench --limit 1 --no-eval # generate patches
-# Official evaluation requires WSL/Linux + Docker
+# SWE-bench Verified — patch generation (no Docker needed)
+python main.py --swebench --limit 1 --no-eval               # smoke test
+python main.py --swebench --limit 10 --no-eval --max-iterations 30
+python main.py --swebench --no-eval --max-iterations 30     # full 500-task run
 ```
 
-## Tools (29)
+Results are saved after every task, so a rerun resumes automatically and skips completed instance IDs. The published runs used `--max-iterations 30` explicitly (the CLI default is 20).
+
+**Official evaluation** (WSL/Linux + Docker):
+
+```bash
+python main.py --swebench-eval --predictions results/PREDICTIONS.jsonl
+# between batches, reclaim disk: docker system prune -a -f
+```
+
+Evaluating in per-repository batches keeps Docker image usage manageable on a laptop.
+
+## Tools (33)
 
 | Category       | Tools                                                                             |
 | -------------- | --------------------------------------------------------------------------------- |
@@ -120,21 +146,26 @@ python main.py --swebench --limit 1 --no-eval # generate patches
 | **Git**        | `git_status`, `git_diff`, `git_commit`, `git_log`, `git_checkout_file`            |
 | **Agent**      | `write_scratchpad`, `read_scratchpad`, `request_transition`, `report_confidence`  |
 
+The FSM exposes only a state-specific subset on each turn, so an individual API call carries far fewer than 33 schemas.
+
 ## Key Features
 
-- **FileSystem foundation** — all file operations go through `git ls-files`, respecting `.gitignore` automatically
-- **Two-step RAG via ChromaDB** — first finds relevant files, then retrieves specific chunks within those files. AST-based chunking, auto-indexes codebases with 3+ Python files
-- **Scratchpad memory** — agent saves notes that survive context trimming, preventing amnesia on long tasks
+- **FileSystem foundation** — repository enumeration uses `git ls-files` (respecting `.gitignore`), with an `rglob` fallback for non-git directories; every path is resolved and checked to stay inside the workspace root
+- **Two-step RAG via ChromaDB** — step 1 ranks file summaries, step 2 ranks code chunks and promotes those originating from the step-1 files. AST-based chunking (functions and classes at any nesting depth, stored whole) with `all-MiniLM-L6-v2` embeddings; a fresh in-memory index is built per task for codebases with 3+ Python files
+- **Scratchpad memory** — the agent writes notes via a tool; they are re-injected on every iteration, so they survive context trimming and prevent amnesia on long tasks
+- **Reflexion** — failures are written to `reflections/reflection_{timestamp}.json`; the **3 most recent** are loaded at the start of the next task (recency-based; no similarity matching yet)
 - **Structured test results** — `[TEST_RESULT:PASS] passed=X failed=Y errors=Z` instead of brittle string matching
 - **Trajectory logging** — every agent run saved as structured JSON for analysis
-- **Loop detection** — detects repeated failures and forces different approaches
-- **Token budget** — configurable limit with 80% warning, prevents runaway API costs
-- **Command whitelisting** — deny by default, only safe commands allowed
-- **Reflexion** — stores failure reflections, retrieves them for similar future tasks
-- **Timeout escalation** — retries with doubled timeout on slow test suites
-- **Parallel reads** — multiple read tools per turn, one write per turn
-- **Multi-model routing** — uses lighter model for exploration, full model for implementation
-- **Automated test generation** — agent can write reproduction scripts to verify bugs exist before fixing
+- **Broken-environment detection** — recognizes dependency-error patterns (`ModuleNotFoundError`, `ImportError`, "No module named", "could not determine", "broken installation"); after 2 hits it stops futile test reruns and directs the agent to verify with `git_diff`
+- **Loop detection** — if the last 3 tool results are identical, injects a change-approach directive
+- **Edit resilience** — whitespace-tolerant `str_replace` with automatic re-indentation, plus a closest-match hint (via `difflib`) returned when an exact match fails
+- **Token budget** — 200,000 tokens per task by default, with a warning threshold, preventing runaway consumption
+- **Retry with backoff** — transient endpoint errors get up to 3 attempts with linear delays (5s → 10s → 15s)
+- **Command whitelisting** — `run_command` is gated against a prefix allowlist (`python`, `pip`, `pytest`, `git`, `ls`, …); anything else is rejected before a subprocess is spawned
+- **Parallel reads, single write per turn** — multiple read tools may run in one turn, but at most one write, preventing accidental multi-file clobbering
+- **JSON fallback tool parsing** — tool calls are also parsed from raw text, so the agent works with OpenAI-compatible models that lack native tool-use support
+- **Automated test generation** — the agent can write reproduction scripts to verify a bug exists before fixing it
+- **Optional light-model routing** — set `INNKUBE_MODEL_LIGHT` to serve `PLAN`/`EXPLORE` from a cheaper model; unset by default, and all published runs used a single model throughout
 
 ## Project Structure
 
@@ -142,8 +173,8 @@ python main.py --swebench --limit 1 --no-eval # generate patches
 agent/
 ├── agent.py           # Core engine: handle_message + run_task
 ├── filesystem.py      # FileSystem foundation (git ls-files)
-├── tools.py           # 24 tools with schemas and implementations
-├── fsm.py             # Finite State Machine (6 states)
+├── tools.py           # 33 tools with schemas and implementations
+├── fsm.py             # Finite State Machine (6 states + detect_initial_state)
 ├── rag.py             # RAG index (ChromaDB + sentence-transformers)
 ├── llm.py             # LLM API client
 ├── prompts.py         # System prompts
@@ -174,4 +205,13 @@ docs/
 
 ## LLM
 
-Uses the InnKube LLM Inference Endpoint with model `gemma4-31b-it` via an OpenAI-compatible API.
+Uses the InnKube LLM Inference Endpoint through an OpenAI-compatible API. Configured via environment variables:
+
+| Variable              | Default                                  | Purpose                                       |
+| --------------------- | ---------------------------------------- | --------------------------------------------- |
+| `INNKUBE_API_KEY`     | — (required)                             | authentication                                |
+| `INNKUBE_BASE_URL`    | `https://llms.innkube.fim.uni-passau.de` | endpoint                                      |
+| `INNKUBE_MODEL`       | `gemma4-31b-it`                          | primary model                                 |
+| `INNKUBE_MODEL_LIGHT` | unset                                    | optional cheaper model for `PLAN` / `EXPLORE` |
+
+Benchmarked models: `gemma4-31b-it` (dense, 31B parameters) and `qwen36-35b` (Qwen3.6-35B-A3B, mixture-of-experts, ~3B active parameters per token).
