@@ -294,7 +294,7 @@ function setTerminalOpen(open: boolean) {
   }
 }
 
-async function handleWorkspaceOpen(path: string) {
+async function handleWorkspaceOpen(path?: string) {
   const data = await openWorkspace(path);
   currentWorkspace = data.workspace;
   workspaceInfoEl.textContent = `${data.total_files} files · ${data.workspace}`;
@@ -308,32 +308,24 @@ async function handleWorkspaceOpen(path: string) {
     terminal.connect(currentTerminalWs, { reset: true });
   }
   pathPicker.setPath(data.workspace);
+  pathPicker.setStatus("");
 }
 
 const pathPicker = createPathPicker(pathPickerHost, {
   onOpen: handleWorkspaceOpen,
 });
 
-// Auto-open last workspace on load
-const lastWorkspace = localStorage.getItem("last-workspace");
-if (lastWorkspace) {
-  handleWorkspaceOpen(lastWorkspace).catch((e) => {
-    pathPicker.setStatus(e instanceof Error ? e.message : "Failed to open last project", true);
-    chatMessagesEl.innerHTML = `
-      <div class="welcome">
-        <div class="welcome-icon">λ</div>
-        <div class="welcome-title">Welcome back</div>
-        <div class="welcome-text">Could not open the last project. Pick a folder with Browse… or enter a path, then click Open.</div>
-      </div>`;
-  });
-} else {
+// Auto-open the directory the server was launched from.
+pathPicker.setStatus("Opening project…");
+handleWorkspaceOpen().catch((e) => {
+  pathPicker.setStatus(e instanceof Error ? e.message : "Failed to open project", true);
   chatMessagesEl.innerHTML = `
     <div class="welcome">
       <div class="welcome-icon">λ</div>
       <div class="welcome-title">Coding Agent</div>
-      <div class="welcome-text">Enter a project path above and open it to start.</div>
+      <div class="welcome-text">Could not open the launch directory. Pick a folder with Browse… or enter a path, then click Open.</div>
       <div class="welcome-hint">Your workspace, terminal, and agent chat — all in one place.</div>
     </div>`;
-}
+});
 
 setTerminalOpen(terminalOpen);

@@ -63,11 +63,16 @@ export async function browseFilesystem(path?: string): Promise<BrowseResponse> {
   return res.json();
 }
 
-export async function openWorkspace(path: string): Promise<OpenWorkspaceResponse> {
+/** Opens `path`, or the server's launch directory when path is omitted. */
+export async function openWorkspace(path?: string): Promise<OpenWorkspaceResponse> {
   const res = await fetch("/api/workspace/open", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, session_id: getSessionId() }),
+    body: JSON.stringify({
+      path: path ?? "",
+      use_default: !path,
+      session_id: getSessionId(),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
