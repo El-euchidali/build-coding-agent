@@ -2,6 +2,8 @@
 
 An autonomous Python coding agent that navigates codebases, fixes bugs, writes code, and verifies solutions through tests. Built with a Finite State Machine controller, RAG-powered code search, and a conversational interface.
 
+📄 **[Final Report](report.pdf)**
+
 ## Results
 
 All SWE-bench numbers below come from the **official SWE-bench Docker evaluator**, not from the agent's own test runs.
@@ -133,11 +135,11 @@ python main.py --swebench --max-iterations 30
 
 Every run uses the fixed run id `swebench_run`, which is what makes resume work. It writes:
 
-| Path                                              | Contents                                          |
-| ------------------------------------------------- | ------------------------------------------------- |
-| `results/swebench_predictions_swebench_run.jsonl` | patches in the evaluator's input format           |
-| `results/swebench_agent_swebench_run.json`        | per-task tokens, iterations, and stop reasons     |
-| `swebench_run.coding-agent-fsm.json`              | the official evaluator's report (written to CWD)  |
+| Path                                              | Contents                                         |
+| ------------------------------------------------- | ------------------------------------------------ |
+| `results/swebench_predictions_swebench_run.jsonl` | patches in the evaluator's input format          |
+| `results/swebench_agent_swebench_run.json`        | per-task tokens, iterations, and stop reasons    |
+| `swebench_run.coding-agent-fsm.json`              | the official evaluator's report (written to CWD) |
 
 Evaluating in per-repository batches — `--instance-ids <id> <id> …` — keeps Docker image usage manageable on a laptop. There is no CLI flag for evaluating an existing predictions file on its own; call `run_official_evaluation()` in `evaluation/swebench_runner.py` directly if you need that.
 
