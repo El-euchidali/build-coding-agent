@@ -35,6 +35,7 @@ from ui.session import (
     browse_directory,
     build_tree,
     get_chat_session,
+    get_default_workspace,
     get_session_workspace,
     list_tree_children,
     open_workspace,
@@ -58,16 +59,34 @@ app = FastAPI(title="Coding Agent IDE", lifespan=lifespan)
 chat_runs = ChatRunManager()
 
 
-def _workspace_path(workspace: str) -> Path:
-    return Path(workspace).resolve()
+class WorkspaceError(ValueError):
+    """A request carried a missing, unreadable, or disallowed workspace path."""
 
 
-def _get_session(conversation_id: str, workspace: str) -> dict:
+@app.exception_handler(WorkspaceError)
+async def _workspace_error_handler(request: Request, exc: WorkspaceError):
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+def _require_workspace(workspace: str | None, *, create: bool = False) -> Path:
+    """Resolve a caller-supplied workspace path.
+
+    Never falls back to the server's working directory: an omitted workspace
+    would otherwise silently point the agent at wherever the server was started.
+    """
+    if not workspace or not workspace.strip():
+        raise WorkspaceError("workspace is required")
+    try:
+        return validate_workspace(workspace, create=create)
+    except ValueError as e:
+        raise WorkspaceError(str(e)) from e
+
+
+def _get_session(conversation_id: str, workspace_path: Path) -> dict:
     existing = get_chat_session(conversation_id)
     if existing:
         return existing
 
-    workspace_path = _workspace_path(workspace)
     migrate_legacy(workspace_path)
 
     conv = load_conversation(workspace_path, conversation_id)
@@ -169,12 +188,12 @@ async def fs_browse(path: str | None = None):
 async def open_workspace_endpoint(request: Request):
     body = await request.json()
     session_id = body.get("session_id", "default")
-    path = body.get("path", "")
-    if not path:
+    path = (body.get("path") or "").strip()
+    if not path and not body.get("use_default"):
         return JSONResponse({"error": "path is required"}, status_code=400)
 
     try:
-        session = open_workspace(session_id, path)
+        session = open_workspace(session_id, path or None)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -206,10 +225,7 @@ async def ensure_terminal_endpoint(request: Request):
         if not workspace_path:
             return JSONResponse({"error": "workspace is required"}, status_code=400)
     else:
-        try:
-            workspace_path = validate_workspace(workspace)
-        except ValueError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
+        workspace_path = _require_workspace(workspace)
 
     try:
         await asyncio.to_thread(pty_manager.respawn_sync, session_id, workspace_path)
@@ -222,12 +238,15 @@ async def ensure_terminal_endpoint(request: Request):
     }
 
 
+@app.get("/api/workspace/default")
+async def get_default_workspace_endpoint():
+    """The workspace the UI opens automatically — the server's launch directory."""
+    return {"workspace": str(get_default_workspace())}
+
+
 @app.get("/api/workspace")
 async def get_workspace(workspace: str | None = None):
-    try:
-        root = validate_workspace(workspace) if workspace else Path.cwd().resolve()
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+    root = _require_workspace(workspace)
     fs = FileSystem(root)
     files = [str(f.relative_to(root)).replace("\\", "/") for f in fs.tracked_files()]
     dirs = set()
@@ -246,18 +265,14 @@ async def get_workspace(workspace: str | None = None):
 
 @app.get("/api/workspace/tree")
 async def get_workspace_tree(workspace: str, path: str = ""):
-    try:
-        root = validate_workspace(workspace)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-
+    root = _require_workspace(workspace)
     fs = FileSystem(root)
     return {"children": list_tree_children(fs, path)}
 
 
 @app.get("/api/conversations")
 async def get_conversations(workspace: str | None = None):
-    root = _workspace_path(workspace) if workspace else Path.cwd().resolve()
+    root = _require_workspace(workspace)
     migrate_legacy(root)
     return {"conversations": list_conversations(root)}
 
@@ -265,9 +280,8 @@ async def get_conversations(workspace: str | None = None):
 @app.post("/api/conversations")
 async def post_conversation(request: Request):
     body = await request.json()
-    workspace = body.get("workspace", str(Path.cwd()))
     title = body.get("title", "New chat")
-    root = _workspace_path(workspace)
+    root = _require_workspace(body.get("workspace"))
     migrate_legacy(root)
     conv = create_conversation(root, title=title)
     return {"id": conv["id"], "title": conv["title"]}
@@ -275,7 +289,7 @@ async def post_conversation(request: Request):
 
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation(conv_id: str, workspace: str | None = None):
-    root = _workspace_path(workspace) if workspace else Path.cwd().resolve()
+    root = _require_workspace(workspace)
     conv = load_conversation(root, conv_id)
     if conv is None:
         return JSONResponse({"error": "Not found"}, status_code=404)
@@ -291,7 +305,7 @@ async def get_conversation(conv_id: str, workspace: str | None = None):
 
 @app.delete("/api/conversations/{conv_id}")
 async def remove_conversation(conv_id: str, workspace: str | None = None):
-    root = _workspace_path(workspace) if workspace else Path.cwd().resolve()
+    root = _require_workspace(workspace)
     remove_chat_session(conv_id)
     ok = delete_conversation(root, conv_id)
     if not ok:
@@ -302,7 +316,7 @@ async def remove_conversation(conv_id: str, workspace: str | None = None):
 @app.get("/api/file")
 async def get_file(path: str, workspace: str | None = None):
     """Return the contents of a file, restricted to inside the workspace."""
-    root = _workspace_path(workspace) if workspace else Path.cwd().resolve()
+    root = _require_workspace(workspace)
     target = (root / path).resolve()
     if not target.is_relative_to(root):
         return JSONResponse({"error": "Path outside workspace"}, status_code=403)
@@ -324,10 +338,7 @@ async def get_file(path: str, workspace: str | None = None):
 @app.get("/api/git/diff")
 async def get_git_diff(workspace: str):
     """Return git status and diff for the workspace inspector."""
-    try:
-        root = validate_workspace(workspace, create=False)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+    root = _require_workspace(workspace)
 
     try:
         status_result = subprocess.run(
@@ -369,8 +380,8 @@ async def chat_endpoint(request: Request):
     body = await request.json()
     user_message = body.get("message", "")
     display_message = body.get("display_message") or user_message
-    workspace = body.get("workspace", str(Path.cwd()))
     conversation_id = body.get("conversation_id") or body.get("session_id", "default")
+    workspace = _require_workspace(body.get("workspace"))
 
     active_run = chat_runs.get_active(conversation_id)
     if active_run:
@@ -492,8 +503,7 @@ async def stop_endpoint(request: Request):
 async def reset_session(request: Request):
     """Start a new conversation (legacy name kept for compatibility)."""
     body = await request.json()
-    workspace = body.get("workspace", str(Path.cwd()))
-    root = _workspace_path(workspace)
+    root = _require_workspace(body.get("workspace"))
     migrate_legacy(root)
     conv = create_conversation(root)
     return {"status": "reset", "conversation_id": conv["id"], "id": conv["id"], "title": conv["title"]}

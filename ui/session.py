@@ -28,6 +28,9 @@ _browser_sessions: dict[str, WorkspaceSession] = {}
 _chat_sessions: dict[str, dict] = {}
 _persist_lock = threading.Lock()
 
+# Captured at import so a later os.chdir (or a reload worker) cannot move it.
+LAUNCH_WORKSPACE = Path.cwd().resolve()
+
 
 def _sessions_store_path() -> Path:
     root = Path(__file__).resolve().parent.parent
@@ -94,6 +97,14 @@ def _is_under_allowed_roots(path: Path) -> bool:
     )
 
 
+def get_default_workspace() -> Path:
+    """The directory the server was launched from — opened automatically on load."""
+    roots = _allowed_roots()
+    if roots and not _is_under_allowed_roots(LAUNCH_WORKSPACE):
+        return roots[0]
+    return LAUNCH_WORKSPACE
+
+
 def get_browse_roots() -> list[dict]:
     """Return starting locations for the folder picker."""
     roots = _allowed_roots()
@@ -102,7 +113,7 @@ def get_browse_roots() -> list[dict]:
 
     seen: set[str] = set()
     items: list[dict] = []
-    for label, p in [("Home", Path.home()), ("Current", Path.cwd())]:
+    for label, p in [("Home", Path.home()), ("Current", LAUNCH_WORKSPACE)]:
         resolved = p.expanduser().resolve()
         key = str(resolved)
         if key not in seen and resolved.is_dir():
@@ -243,9 +254,12 @@ def list_tree_children(fs: FileSystem, rel_path: str = "") -> list[dict]:
     )
 
 
-def open_workspace(session_id: str, raw_path: str) -> WorkspaceSession:
-    """Initialize harness session for a workspace path."""
-    workspace = validate_workspace(raw_path)
+def open_workspace(session_id: str, raw_path: str | None = None) -> WorkspaceSession:
+    """Initialize harness session for a workspace path, or the launch directory."""
+    if raw_path:
+        workspace = validate_workspace(raw_path)
+    else:
+        workspace = validate_workspace(str(get_default_workspace()), create=False)
     migrate_legacy(workspace)
 
     conv = create_conversation(workspace)

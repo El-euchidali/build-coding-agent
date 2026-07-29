@@ -23,11 +23,8 @@ export function createPathPicker(
   const btn = container.querySelector<HTMLButtonElement>("#open-btn")!;
   const status = container.querySelector<HTMLSpanElement>("#path-status")!;
 
-  const defaultPath = localStorage.getItem("last-workspace") || "";
-  if (defaultPath) input.value = defaultPath;
-
   let modal: HTMLElement | null = null;
-  let selectedBrowsePath: string | null = defaultPath || null;
+  let selectedBrowsePath: string | null = null;
   let opening = false;
 
   function setStatus(msg: string, isError = false) {
@@ -61,7 +58,6 @@ export function createPathPicker(
     setStatus("Opening project…");
     try {
       await callbacks.onOpen(path);
-      localStorage.setItem("last-workspace", path);
       setStatus("Opened");
       window.setTimeout(() => setStatus(""), 2000);
     } catch (e) {
