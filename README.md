@@ -37,7 +37,7 @@ The **entry state is detected**, not hardcoded: `detect_initial_state()` inspect
 ## Setup
 
 ```bash
-git clone https://git.fim.uni-passau.de/elleuchi/build-coding-agent
+git clone https://github.com/El-euchidali/build-coding-agent.git
 cd build-coding-agent
 python -m venv venv
 venv\Scripts\activate        # Linux/Mac: source venv/bin/activate
