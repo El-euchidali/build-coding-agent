@@ -33,7 +33,7 @@ ChatGPT produced a structured README with sections for Overview, Setup, Usage, a
 
 ### Reasoning
 
-The suggested folder layout was useful, but the first draft assumed OpenAI as the only backend and included features we had not decided on (e.g. Docker sandboxing from day one). We rewrote the LLM section for the InnKube OpenAI-compatible endpoint and stripped speculative features. Verified against our `.env.example` plan before committing (`c66863b`, `2a0abd5`).
+The suggested folder layout was useful, but the first draft assumed OpenAI as the only backend and included features we had not decided on (e.g. Docker sandboxing from day one). We rewrote the LLM section for the InnKube OpenAI-compatible endpoint and stripped speculative features. Verified against our `.env.example` plan before committing (`356aaf5`, `b262e80`).
 
 ### Impact
 
@@ -67,7 +67,7 @@ Cursor generated tool schemas, Python handlers, and a context-trimming routine t
 
 ### Reasoning
 
-Schemas and the `str_replace`-first policy were kept (commit `fcf6712`, `35c7d75`, merged `5f083b7`). Token tracking was added manually so we could measure cost per benchmark task. We rejected an AI suggestion to auto-apply edits without showing a diff in logs — we needed full trajectory visibility for evaluation.
+Schemas and the `str_replace`-first policy were kept (commit `d86fc4c`, `2f5c03b`, merged `7e2d3d9`). Token tracking was added manually so we could measure cost per benchmark task. We rejected an AI suggestion to auto-apply edits without showing a diff in logs — we needed full trajectory visibility for evaluation.
 
 ### Impact
 
@@ -102,7 +102,7 @@ Cursor drafted `evaluation/humaneval_runner.py` and prompt revisions. ChatGPT he
 
 ### Reasoning
 
-The runner structure was accepted with local fixes for Windows (`30f38c8`, merged `4e8fa7c`). Prompt text from ChatGPT was too verbose and sometimes contradicted tool descriptions; we shortened it and aligned wording with actual tool names. Commit `b355a86` captured the first integrated HumanEval path; later analysis (`e5035c3`) documented 96.3% (158/164).
+The runner structure was accepted with local fixes for Windows (`91f1f4c`, merged `b529849`). Prompt text from ChatGPT was too verbose and sometimes contradicted tool descriptions; we shortened it and aligned wording with actual tool names. Commit `e0e8a24` captured the first integrated HumanEval path; later analysis (`52fe8c1`) documented 96.3% (158/164).
 
 ### Impact
 
@@ -136,7 +136,7 @@ Claude proposed the six-state workflow and tool gating tables. Cursor implemente
 
 ### Reasoning
 
-The state machine concept was accepted (`19cef53`, merge `79ebb12`). We changed several AI defaults: transitions were initially too rigid (e.g. forced EXPLORE → IMPLEMENT after a fixed iteration count), and IMPLEMENT initially lacked execution tools — fixed later in `dbf82fa`. Measured outcome: ~47% token reduction on HumanEval versus the previous free-form loop.
+The state machine concept was accepted (`1b4a5ae`, merge `a681f68`). We changed several AI defaults: transitions were initially too rigid (e.g. forced EXPLORE → IMPLEMENT after a fixed iteration count), and IMPLEMENT initially lacked execution tools — fixed later in `ffce811`. Measured outcome: ~47% token reduction on HumanEval versus the previous free-form loop.
 
 ### Impact
 
@@ -170,7 +170,7 @@ Produced a categorized breakdown matching what became `docs/failure_analysis.md`
 
 ### Reasoning
 
-We manually re-checked each failing task against the official tests. The categories were accurate. Commit `e5035c3` / merge `f11dd41`. No code change was required — documentation only.
+We manually re-checked each failing task against the official tests. The categories were accurate. Commit `52fe8c1` / merge `2eb72b1`. No code change was required — documentation only.
 
 ### Impact
 
@@ -204,7 +204,7 @@ Cursor generated schemas and implementations for the extended tool set. It initi
 
 ### Reasoning
 
-Tool APIs landed in `d82dd2d` / `a931554`. We **rejected** the blacklist security model after reviewing bypasses (obfuscated shells, interpreters). Later reliability work (`9778959`) replaced it with deny-by-default whitelisting (`python`, `pip`, `pytest`, `git`, common safe commands). The AI code for git wrappers was mostly kept after testing on a sample repo.
+Tool APIs landed in `c0e8647` / `526c779`. We **rejected** the blacklist security model after reviewing bypasses (obfuscated shells, interpreters). Later reliability work (`bd1fc3e`) replaced it with deny-by-default whitelisting (`python`, `pip`, `pytest`, `git`, common safe commands). The AI code for git wrappers was mostly kept after testing on a sample repo.
 
 ### Impact
 
@@ -238,7 +238,7 @@ AI proposed ChromaDB collections, embedding of code chunks, and a runner skeleto
 
 ### Reasoning
 
-First version shipped in `7b034ea` / `a12ed70` and correctly solved `astropy__astropy-12907` (one-line fix in separability matrix logic), later confirmed by the official Docker evaluator. We kept ChromaDB but reworked chunk metadata and indexing triggers (auto-index when ≥3 Python files). Embedding model choice followed AI suggestion after a small local smoke test.
+First version shipped in `7e986b9` / `5a2edb5` and correctly solved `astropy__astropy-12907` (one-line fix in separability matrix logic), later confirmed by the official Docker evaluator. We kept ChromaDB but reworked chunk metadata and indexing triggers (auto-index when ≥3 Python files). Embedding model choice followed AI suggestion after a small local smoke test.
 
 ### Impact
 
@@ -272,7 +272,7 @@ Cursor added PLAN, batch tools, and a repetition/loop heuristic. Suggested reset
 
 ### Reasoning
 
-Merged as `92699de` / `f8b7954`. Loop detection thresholds were tuned down after false positives on legitimate retry-with-timeout patterns. Same day FSM fix (`dbf82fa`) restored execution tools in IMPLEMENT and added recovery when the model called a blocked tool.
+Merged as `4a0e583` / `9c847b8`. Loop detection thresholds were tuned down after false positives on legitimate retry-with-timeout patterns. Same day FSM fix (`ffce811`) restored execution tools in IMPLEMENT and added recovery when the model called a blocked tool.
 
 ### Impact
 
@@ -306,7 +306,7 @@ Large generated change set: `agent/filesystem.py`, `agent/cli.py`, `ui/app.py`, 
 
 ### Reasoning
 
-Architecture accepted (`5826263` / `3e20096`). We simplified the first UI (basic bubbles + sidebar) and kept production concerns out of scope. FileSystem-on-git was kept because it automatically honors `.gitignore`. Some generated HTML/JS was rewritten for clarity.
+Architecture accepted (`70f822d` / `ee7fe74`). We simplified the first UI (basic bubbles + sidebar) and kept production concerns out of scope. FileSystem-on-git was kept because it automatically honors `.gitignore`. Some generated HTML/JS was rewritten for clarity.
 
 ### Impact
 
@@ -340,7 +340,7 @@ Patches across `execution/`, `agent/tools.py`, `agent/trajectory.py`, and failur
 
 ### Reasoning
 
-Shipped in `9778959` / `b1a1eba`. We kept structured test results and trajectory logging nearly as proposed. Permission prompts were simplified for CLI UX. This is one of the rare cases where the product under development helped implement its own hardening.
+Shipped in `bd1fc3e` / `0719d20`. We kept structured test results and trajectory logging nearly as proposed. Permission prompts were simplified for CLI UX. This is one of the rare cases where the product under development helped implement its own hardening.
 
 ### Impact
 
@@ -366,7 +366,7 @@ Long SWE-bench sessions still "forgot" bug locations after context trim. Token s
 
 ### AI Output Summary
 
-Design notes plus implementations for `write_scratchpad` / `read_scratchpad`, budget checks, diff-oriented context, and transition requests (`40b2a25` / `fbbb1a7`).
+Design notes plus implementations for `write_scratchpad` / `read_scratchpad`, budget checks, diff-oriented context, and transition requests (`af37d92` / `640663a`).
 
 ### Decision
 
@@ -400,7 +400,7 @@ Exploration was still sequential (one read per turn). We also wanted the agent t
 
 ### AI Output Summary
 
-Parallel tool scheduling rules, `agent/reflexion.py`, confidence reporting, and RAG guard fixes (`dfdde15` / `0430fb3`).
+Parallel tool scheduling rules, `agent/reflexion.py`, confidence reporting, and RAG guard fixes (`c8b7f65` / `4d0592a`).
 
 ### Decision
 
@@ -434,7 +434,7 @@ Single-stage chunk retrieval still returned noisy snippets on huge repos. We wan
 
 ### AI Output Summary
 
-Two-step retrieval pipeline, test-generation tool, and model routing hooks (`460dc68` / `b7ff33b`). README updated the same day to document the expanded tool list and features.
+Two-step retrieval pipeline, test-generation tool, and model routing hooks (`559f68d` / `af51c3e`). README updated the same day to document the expanded tool list and features.
 
 ### Decision
 
@@ -468,7 +468,7 @@ CLI users needed streaming output, smarter context trimming summaries, API retry
 
 ### AI Output Summary
 
-Streaming CLI updates, trim summarization, retry wrapper around the LLM client, and session persistence helpers (`1802f7a` / `a897b61`).
+Streaming CLI updates, trim summarization, retry wrapper around the LLM client, and session persistence helpers (`0778175` / `7e9804a`).
 
 ### Decision
 
@@ -502,7 +502,7 @@ Conversations needed durable history the agent and UI could reload — not only 
 
 ### AI Output Summary
 
-New `agent/history.py` and wiring in `agent/agent.py`, `agent/cli.py`, `ui/app.py` (`c7c94ea` / merge `1f0d2ab`).
+New `agent/history.py` and wiring in `agent/agent.py`, `agent/cli.py`, `ui/app.py` (`b6e3e78` / merge `d9cf736`).
 
 ### Decision
 
@@ -536,7 +536,7 @@ In chat mode, when the model returned multiple tool calls in one turn, extras we
 
 ### AI Output Summary
 
-Cursor located the early-return / single-call handling in the chat loop and proposed executing the full tool-call list with the same scheduling rules as `run_task` (`ad8ce69` / `df8969a`).
+Cursor located the early-return / single-call handling in the chat loop and proposed executing the full tool-call list with the same scheduling rules as `run_task` (`69a26de` / `3338f80`).
 
 ### Decision
 
@@ -577,7 +577,7 @@ Several related prompts over two days:
 
 ### AI Output Summary
 
-Patches across `evaluation/swebench_runner.py`, `agent/agent.py`, `agent/prompts.py`, `main.py` (`08710b4`, `55c0883`, `6e43fac`, `ab5d3b3`, `042925b`, `38db2b2`, `457483b`).
+Patches across `evaluation/swebench_runner.py`, `agent/agent.py`, `agent/prompts.py`, `main.py` (`8717d73`, `fb9a0e3`, `289e402`, `04b3bae`, `b304e5f`, `339fb02`, `2f8ce90`).
 
 ### Decision
 
@@ -585,7 +585,7 @@ Patches across `evaluation/swebench_runner.py`, `agent/agent.py`, `agent/prompts
 
 ### Reasoning
 
-200k token budget (`55c0883`) was accepted for large instances after cost discussion. Analysis-paralysis detection thresholds were adjusted to avoid false positives on legitimately large explorations. Prompt fixes (`457483b`) were human-edited after AI drafts drifted from tool names again. The implemented detector compares the last three tool results rather than counting reads, which also catches repeated failing edits.
+200k token budget (`fb9a0e3`) was accepted for large instances after cost discussion. Analysis-paralysis detection thresholds were adjusted to avoid false positives on legitimately large explorations. Prompt fixes (`2f8ce90`) were human-edited after AI drafts drifted from tool names again. The implemented detector compares the last three tool results rather than counting reads, which also catches repeated failing edits.
 
 ### Impact
 
@@ -611,7 +611,7 @@ On SWE-bench, `str_replace` / edit tools still failed when context drifted sligh
 
 ### AI Output Summary
 
-More precise edit failure messages, tighter apply logic, and clearer termination conditions (`6ec4bb2` / `98da814`).
+More precise edit failure messages, tighter apply logic, and clearer termination conditions (`c8dd50c` / `1f60003`).
 
 ### Decision
 
@@ -645,7 +645,7 @@ The June HTML UI was too limited for demos: no real terminal, weak file tree, an
 
 ### AI Output Summary
 
-Large scaffold: `ui/frontend/**`, `ui/session.py`, `ui/terminal.py`, `ui/chat_runs.py`, backend routes in `ui/app.py`, and README updates (`a87a9a2`). Roughly 6.7k insertions in the commit.
+Large scaffold: `ui/frontend/**`, `ui/session.py`, `ui/terminal.py`, `ui/chat_runs.py`, backend routes in `ui/app.py`, and README updates (`90cd20c`). Roughly 6.7k insertions in the commit.
 
 ### Decision
 
@@ -653,7 +653,7 @@ Large scaffold: `ui/frontend/**`, `ui/session.py`, `ui/terminal.py`, `ui/chat_ru
 
 ### Reasoning
 
-Overall architecture accepted (SSE chat, WS terminal, session path checks, `ALLOWED_WORKSPACE_ROOTS`). We reworked CSS/layout and several frontend components for clarity, and hardened path validation beyond the first AI draft. Dependency pins needed a follow-up (`1babc9a` on 2026-07-09).
+Overall architecture accepted (SSE chat, WS terminal, session path checks, `ALLOWED_WORKSPACE_ROOTS`). We reworked CSS/layout and several frontend components for clarity, and hardened path validation beyond the first AI draft. Dependency pins needed a follow-up (`f62cad9` on 2026-07-09).
 
 ### Impact
 
@@ -679,7 +679,7 @@ The IDE terminal worked conceptually on Unix-style PTYs but failed or degraded o
 
 ### AI Output Summary
 
-Windows-oriented terminal manager changes, session/app wiring, and small frontend adjustments (`32de859`). Added the required dependency in `requirements.txt`.
+Windows-oriented terminal manager changes, session/app wiring, and small frontend adjustments (`da15fa8`). Added the required dependency in `requirements.txt`.
 
 ### Decision
 
