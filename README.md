@@ -2,7 +2,7 @@
 
 An autonomous Python coding agent that navigates codebases, fixes bugs, writes code, and verifies solutions through tests. Built with a Finite State Machine controller, RAG-powered code search, and a conversational interface.
 
-📄 **[Final Report](report.pdf)** . [Final Presentation](presentation.pptx)
+📄 **[Final Report](report.pdf)**
 
 ## Results
 
