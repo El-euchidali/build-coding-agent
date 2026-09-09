@@ -66,9 +66,11 @@ def get_client() -> OpenAI:
         raise ValueError(
             "INNKUBE_API_KEY not set. Copy .env.example to .env and add your key."
         )
-    base_url = os.environ.get(
-        "INNKUBE_BASE_URL", "https://llms.innkube.fim.uni-passau.de"
-    )
+    base_url = os.environ.get("INNKUBE_BASE_URL")
+    if not base_url:
+        raise ValueError(
+            "INNKUBE_BASE_URL not set. Copy .env.example to .env and set the endpoint."
+        )
     timeout = float(os.environ.get("INNKUBE_TIMEOUT", "600"))
     return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
