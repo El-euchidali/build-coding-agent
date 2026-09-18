@@ -271,3 +271,12 @@ Uses the InnKube LLM Inference Endpoint through an OpenAI-compatible API. Config
 | `INNKUBE_MODEL_LIGHT` | unset                                    | optional cheaper model for `PLAN` / `EXPLORE` |
 
 Benchmarked models: `gemma4-31b-it` (dense, 31B parameters) and `qwen36-35b` (Qwen3.6-35B-A3B, mixture-of-experts, ~3B active parameters per token).
+
+## Authors
+
+Built at the University of Passau's Applied AI Lab by:
+
+- **Mohamed Ali El Euchi** — FSM architecture, two-step RAG pipeline, guards (loop/broken-env detection), SWE-bench & HumanEval evaluation pipeline, benchmarking and analysis
+- **Haseeb Ramzan** — Web IDE, Windows terminal integration, edit-tool reliability, chat history persistence
+
+See the [final report](report.pdf) for the detailed contribution statement.
