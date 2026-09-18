@@ -65,6 +65,7 @@ cd build-coding-agent
 python -m venv venv
 venv\Scripts\activate        # Linux/Mac: source venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt   # only needed to run the tests
 cp .env.example .env
 # Edit .env and set INNKUBE_API_KEY
 ```

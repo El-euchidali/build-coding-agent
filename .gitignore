@@ -24,3 +24,6 @@ progress.md
 
 ui/frontend/node_modules/
 ui/frontend/dist/
+
+venv_ci/
+
