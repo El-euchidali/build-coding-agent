@@ -131,8 +131,13 @@ def detect_initial_state(workspace: Path) -> AgentState:
     in_docstring = False
     for line in content.splitlines():
         stripped = line.strip()
-        if '"""' in stripped or "'''" in stripped:
-            in_docstring = not in_docstring
+        # A line carrying triple quotes is never code itself, but it only opens
+        # or closes a docstring when it holds an odd number of them — so a
+        # one-line """text""" leaves the flag alone instead of latching it on.
+        triple_quotes = stripped.count('"""') + stripped.count("'''")
+        if triple_quotes:
+            if triple_quotes % 2 == 1:
+                in_docstring = not in_docstring
             continue
         if in_docstring:
             continue
