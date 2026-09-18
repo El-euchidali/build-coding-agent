@@ -1,6 +1,10 @@
 # Coding Agent
 
-An autonomous Python coding agent that navigates codebases, fixes bugs, writes code, and verifies solutions through tests. Built with a Finite State Machine controller, RAG-powered code search, and a conversational interface.
+An autonomous coding agent built from scratch that reaches **37.0% on SWE-bench Verified** and **96.3% on HumanEval** — using only open-weight models (Gemma 31B, Qwen 35B-A3B). FSM-controlled tool use, two-step RAG code search, self-verification through tests, CLI + browser IDE.
+
+![Demo: 'build a Streamlit weather dashboard' — full run](docs/demo.gif)
+
+_Demo: full run, work phase at 4× speed._
 
 📄 **[Final Report](report.pdf)**
 
@@ -21,8 +25,27 @@ Token cost across the three full runs: 168M → 88M for the same model once the 
 
 The agent follows a structured workflow instead of free-form tool use:
 
-```
-PLAN → EXPLORE → IMPLEMENT → VERIFY → FIX → DONE
+```mermaid
+stateDiagram-v2
+    [*] --> PLAN: detect_initial_state()
+    PLAN --> EXPLORE: request_transition (validated)
+    EXPLORE --> IMPLEMENT: search stalls, iter >= 3 (event)
+    IMPLEMENT --> VERIFY: edit completed (event)
+    VERIFY --> FIX: run_tests FAIL (event)
+    FIX --> VERIFY: edit completed (event)
+    VERIFY --> DONE: run_tests PASS (event)
+    FIX --> DONE: run_tests PASS (event)
+    DONE --> [*]
+
+    note right of PLAN
+        Entry state is detected from the
+        workspace, not hardcoded.
+        SWE-bench always starts here.
+    end note
+    note right of DONE
+        run_tests PASS reaches DONE from any
+        state that exposes run_tests.
+    end note
 ```
 
 Each state restricts which tools are available, preventing the LLM from skipping steps or making premature changes. Enforcement is mechanical: only the schemas legal in the current state are sent with each API call.
