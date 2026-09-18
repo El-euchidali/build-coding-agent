@@ -1,5 +1,11 @@
 # Coding Agent
 
+[![tests](https://github.com/El-euchidali/build-coding-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/El-euchidali/build-coding-agent/actions/workflows/tests.yml)
+![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-37.0%25-green)
+![HumanEval](https://img.shields.io/badge/HumanEval-96.3%25-green)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 An autonomous coding agent built from scratch that reaches **37.0% on SWE-bench Verified** and **96.3% on HumanEval** — using only open-weight models (Gemma 31B, Qwen 35B-A3B). FSM-controlled tool use, two-step RAG code search, self-verification through tests, CLI + browser IDE.
 
 ![Demo: 'build a Streamlit weather dashboard' — full run](docs/demo.gif)
@@ -270,6 +276,38 @@ Uses the InnKube LLM Inference Endpoint through an OpenAI-compatible API. Config
 | `INNKUBE_BASE_URL`    | `https://llms.innkube.fim.uni-passau.de` | endpoint                                      |
 | `INNKUBE_MODEL`       | `gemma4-31b-it`                          | primary model                                 |
 | `INNKUBE_MODEL_LIGHT` | unset                                    | optional cheaper model for `PLAN` / `EXPLORE` |
+
+### Run with your own model (no InnKube access needed)
+
+The client speaks the OpenAI-compatible API, so any such endpoint works. The env
+variable names are historical — point them anywhere:
+
+**Ollama** (easiest local option):
+
+```
+ollama pull qwen3:8b
+# Ollama serves an OpenAI-compatible API on http://localhost:11434/v1
+```
+
+In `.env`:
+
+```
+INNKUBE_BASE_URL=http://localhost:11434/v1
+INNKUBE_API_KEY=ollama          # any non-empty string; Ollama ignores it
+INNKUBE_MODEL=qwen3:8b
+```
+
+**vLLM**:
+
+```
+vllm serve Qwen/Qwen2.5-Coder-7B-Instruct
+# serves http://localhost:8000/v1
+```
+
+Set `INNKUBE_BASE_URL=http://localhost:8000/v1` and `INNKUBE_MODEL` to the served model name.
+
+Note: the published benchmark numbers were measured with 31B+ models. Small local
+models will drive the agent, but expect materially lower resolve rates.
 
 Benchmarked models: `gemma4-31b-it` (dense, 31B parameters) and `qwen36-35b` (Qwen3.6-35B-A3B, mixture-of-experts, ~3B active parameters per token).
 
